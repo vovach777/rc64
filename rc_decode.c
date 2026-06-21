@@ -1,11 +1,9 @@
 /* =========================================================================
- * RC DECODE v2 — inplace-совместимый декодер
+ * RC DECODE v3 — Subbotin magic (64-bit, 16-bit shift, aligned trim)
  * =========================================================================
  *
  * Usage:
- *   rc_decode_v2 <input_file.rc> <output_file> [original_file]
- *
- * Декодер тот же что v1 — поток энкодера совместим.
+ *   rc_decode <input_file.rc> <output_file> [original_file]
  * ========================================================================= */
 
 #define _POSIX_C_SOURCE 199309L
@@ -25,9 +23,8 @@ static int read_u16_le(FILE *f, uint16_t *v) {
     return 0;
 }
 
-static uint32_t read_u32_from(uint8_t b[4]) {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
-           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+static uint16_t read_u16_be_from(const uint8_t b[2]) {
+    return (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
 }
 
 int main(int argc, char **argv) {
@@ -39,7 +36,6 @@ int main(int argc, char **argv) {
     FILE *fin = fopen(argv[1], "rb");
     if (!fin) { perror("fopen input"); return 1; }
 
-    /* Заголовок */
     uint8_t sig[4];
     if (fread(sig, 1, 4, fin) != 4) { fprintf(stderr, "read sig\n"); fclose(fin); return 1; }
     if (sig[0] != 'r' || sig[1] != 'c') {
@@ -61,7 +57,6 @@ int main(int argc, char **argv) {
     uint8_t *out = malloc(n > 0 ? n : 1);
     if (!out) { fprintf(stderr, "malloc\n"); fclose(fin); return 1; }
 
-    /* RLE mode */
     if (is_rle) {
         memset(out, rle_sym, n);
         fclose(fin);
@@ -72,7 +67,7 @@ int main(int argc, char **argv) {
         }
         fclose(fout);
         double t1 = (double)clock() / CLOCKS_PER_SEC;
-        printf("DECODE v2 OK (RLE, sym=0x%02X)\n", rle_sym);
+        printf("DECODE v3 OK (RLE, sym=0x%02X)\n", rle_sym);
         printf("  decoded: %zu bytes\n", n);
         printf("  time:    %.2f ms\n", (t1 - t0) * 1000.0);
 
@@ -109,38 +104,38 @@ int main(int argc, char **argv) {
     }
     m.total = m.cum[ALPHABET];
 
-    /* Чтение потока слов */
+    /* Чтение потока uint16 (big-endian) */
     long header_sz = 4 + 8 + ALPHABET * 2;
     fseek(fin, 0, SEEK_END);
     long fend = ftell(fin);
     fseek(fin, header_sz, SEEK_SET);
     long body_bytes = fend - header_sz;
     if (body_bytes < 0) body_bytes = 0;
-    size_t nwords = (size_t)(body_bytes / 4);
-    uint32_t *words = malloc((nwords + 8) * sizeof(uint32_t));
+    size_t nwords = (size_t)(body_bytes / 2);
+    uint16_t *words = malloc((nwords + 16) * sizeof(uint16_t));
     if (!words) { fprintf(stderr, "malloc words\n"); free(out); fclose(fin); return 1; }
 
     for (size_t i = 0; i < nwords; i++) {
-        uint8_t b[4];
-        if (fread(b, 1, 4, fin) != 4) {
+        uint8_t b[2];
+        if (fread(b, 1, 2, fin) != 2) {
             fprintf(stderr, "read word %zu\n", i); free(words); free(out); fclose(fin); return 1;
         }
-        words[i] = read_u32_from(b);
+        words[i] = read_u16_be_from(b);
     }
     fclose(fin);
-    for (size_t i = nwords; i < nwords + 8; i++) words[i] = 0;
+    for (size_t i = nwords; i < nwords + 16; i++) words[i] = 0;
 
     /* Декодирование */
-    rc_dec_t rd;
-    rc_dec_init(&rd, words);
-    size_t wi = 3;
+    folk_dec_t rd;
+    folk_dec_init(&rd, words);
+    size_t wi = 4;  /* init read 4 words */
 
     for (size_t i = 0; i < n; i++) {
-        uint32_t cum = rc_dec_get_cum(&rd, m.total);
+        uint32_t cum = folk_dec_get_cum(&rd, m.total);
         uint32_t cum_lo, freq;
         uint8_t sym = model_find(&m, cum, &cum_lo, &freq);
         out[i] = sym;
-        wi += rc_dec_step(&rd, cum_lo, freq, m.total, &words[wi]);
+        wi += folk_dec_step(&rd, &words[wi], cum_lo, freq, m.total);
     }
 
     double t1 = (double)clock() / CLOCKS_PER_SEC;
@@ -152,14 +147,13 @@ int main(int argc, char **argv) {
     }
     fclose(fout);
 
-    printf("DECODE v2 OK\n");
+    printf("DECODE v3 OK\n");
     printf("  input:   %s (%zu words)\n", argv[1], nwords);
     printf("  decoded: %zu bytes\n", n);
     printf("  time:    %.2f ms  (%.1f MB/s)\n",
            (t1 - t0) * 1000.0,
            n > 0 ? (double)n / ((t1 - t0) * 1048576.0) : 0.0);
 
-    /* Verify */
     if (argc == 4) {
         FILE *fref = fopen(argv[3], "rb");
         if (!fref) { perror("fopen original"); free(out); free(words); return 1; }

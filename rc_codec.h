@@ -1,149 +1,125 @@
 /* =========================================================================
- * SCHINDLER 64-BIT RANGE CODER — INPLACE VARIANT (v2)
+ * FOLK CODEC — 64-битный micro-Subbotin (16-битный сдвиг, aligned trim)
  * =========================================================================
  *
- * Cache и FF пишутся сразу в выходной буфер. При carry — один memset
- * патчит FF блок в 0x00000000, cache++ inplace. Нет deferred FF,
- * нет циклов записи на safe emit.
+ * 64-битные low/range, 16-битный сдвиг, BOTTOM = 2^48.
+ * Subbotin aligned trim: range = (-low) & 0xFFFF.
  *
- * Структура содержит указатели на выходной буфер — память выделяется
- * один раз вызывающим кодом, перевыделения нет.
+ * ИДЕЯ:
+ *   64-битный low: 48 бит точности сверху + 16 снизу.
+ *   16-битный сдвиг: выводим top 16 бит как uint16.
+ *   Trim к 2^16-блоку: range = (-low) & 0xFFFF.
+ *   Обрезка убирает только нижние 16 бит — минимальная потеря.
+ *   range после trim >= 1, shift=16 поднимает до 2^16 >= BOTTOM? Нет:
+ *   BOTTOM = 2^48, shift=16 поднимает range на 2^16, нужен renorm цикл.
+ *
+ * Сравнение с 32-битным сдвигом:
+ *   32-bit shift, naive trim:  +1.21% overhead (clip к 2^64)
+ *   16-bit shift, Subbotin trim: ? (clip к 2^16, меньше потеря)
+ *
+ * Вывод: uint16 слова (big-endian).
  * ========================================================================= */
 
 #include <stdint.h>
 #include <string.h>
 
-#define SCHINDLER_BOTTOM_64 0x0000000100000000ULL
+#define FOLK_BOTTOM  (1ULL << 32)    /* 2^32 — безопасно для t*total */
+#define FOLK_MASK16  0xFFFFULL       /* 2^16 - 1 */
 
 typedef struct {
     uint64_t low;
     uint64_t range;
-    uint32_t cache;         /* значение cache слова */
-    uint32_t *cache_ptr;    /* указатель на cache слово в буфере */
-    uint32_t *ff_start;     /* указатель на начало блока FF */
-    uint32_t ff_count;      /* кол-во FF слов в блоке */
-    uint32_t *out_ptr;      /* текущая позиция записи в буфере */
-    uint32_t *out_end;      /* конец буфера (для проверки) */
-    uint32_t *buf_start;    /* начало буфера (для backward walk) */
-} rc_enc_t;
+} folk_enc_t;
 
 typedef struct {
+    uint64_t low;
     uint64_t range;
     uint64_t code;
-} rc_dec_t;
-
-/* --- Энкодер --- */
+} folk_dec_t;
 
 static inline __attribute__((always_inline))
-void rc_enc_init(rc_enc_t *rc, uint32_t *buf, size_t buf_words) {
+void folk_enc_init(folk_enc_t *rc) {
     rc->low = 0;
     rc->range = 0xFFFFFFFFFFFFFFFFULL;
-    rc->cache = 0;
-    rc->out_ptr = buf;
-    rc->out_end = buf + buf_words;
-    rc->buf_start = buf;
-    /* Резервируем слово под cache — запишем в flush */
-    rc->cache_ptr = rc->out_ptr;
-    *rc->out_ptr++ = 0;
-    rc->ff_start = NULL;
-    rc->ff_count = 0;
 }
 
+/* Декодер: читаем 4 слова (8 байт) в code (64 бита) */
 static inline __attribute__((always_inline))
-void rc_enc_step(rc_enc_t *rc, uint32_t cum_lo, uint32_t freq, uint32_t total) {
-    uint64_t t = rc->range / total;
-    uint64_t step = t * cum_lo;
-
-    rc->low += step;
-    rc->range = t * freq;
-
-    /* CARRY: inplace patch */
-    if (rc->low < step) {
-        rc->cache++;
-        if (rc->cache == 0) {
-            /* Cache wrapped (0xFFFFFFFF → 0x00000000).
-               Обратное распространение: cache → 0, идём назад
-               инкрементируя пока не найдём не-FF. */
-            *rc->cache_ptr = 0;
-            uint32_t *p = rc->cache_ptr;
-            while (p > rc->buf_start) {
-                p--;
-                if (*p != 0xFFFFFFFF) {
-                    (*p)++;
-                    break;
-                }
-                *p = 0;
-            }
-        } else {
-            *rc->cache_ptr = rc->cache;
-        }
-        /* FF блок → 0x00000000 одной memset */
-        if (rc->ff_count > 0) {
-            memset(rc->ff_start, 0x00, (size_t)rc->ff_count * sizeof(uint32_t));
-        }
-        rc->ff_count = 0;
-    }
-
-    /* RENORM */
-    if (rc->range < SCHINDLER_BOTTOM_64) {
-        uint32_t out_dword = (uint32_t)(rc->low >> 32);
-
-        if (out_dword == 0xFFFFFFFF) {
-            /* STRADDLE: пишем FF сразу */
-            if (rc->ff_count == 0) rc->ff_start = rc->out_ptr;
-            *rc->out_ptr++ = 0xFFFFFFFF;
-            rc->ff_count++;
-        } else {
-            /* SAFE EMIT: новое слово становится cache */
-            rc->cache = out_dword;
-            rc->cache_ptr = rc->out_ptr;
-            *rc->out_ptr++ = out_dword;
-            rc->ff_count = 0;
-        }
-
-        rc->low <<= 32;
-        rc->range <<= 32;
-    }
-}
-
-static inline __attribute__((always_inline))
-void rc_enc_flush(rc_enc_t *rc) {
-    /* Финальный cache уже в буфере на cache_ptr — обновляем */
-    *rc->cache_ptr = rc->cache;
-    /* FF уже в буфере. Дописываем low (2 слова). */
-    *rc->out_ptr++ = (uint32_t)(rc->low >> 32);
-    *rc->out_ptr++ = (uint32_t)(rc->low & 0xFFFFFFFF);
-}
-
-/* Кол-во записанных слов = rc->out_ptr - buf_start (считает вызывающий) */
-
-/* --- Декодер --- */
-
-static inline __attribute__((always_inline))
-void rc_dec_init(rc_dec_t *rd, const uint32_t *in_buf) {
+void folk_dec_init(folk_dec_t *rd, const uint16_t *in_buf) {
+    rd->low = 0;
     rd->range = 0xFFFFFFFFFFFFFFFFULL;
-    rd->code = ((uint64_t)in_buf[1] << 32) | in_buf[2];
+    rd->code = ((uint64_t)in_buf[0] << 48) | ((uint64_t)in_buf[1] << 32) |
+               ((uint64_t)in_buf[2] << 16) | (uint64_t)in_buf[3];
 }
 
+/* Энкодер: renorm с Subbotin aligned trim (16-битный) */
 static inline __attribute__((always_inline))
-int rc_dec_step(rc_dec_t *rd, uint32_t cum_lo, uint32_t freq,
-                uint32_t total, const uint32_t *in_buf) {
-    int read_words = 0;
-    uint64_t t = rd->range / total;
-    uint64_t step = t * cum_lo;
-    rd->code -= step;
-    rd->range = t * freq;
-    if (rd->range < SCHINDLER_BOTTOM_64) {
-        uint32_t new_dword = in_buf[read_words++];
-        rd->code = (rd->code << 32) | new_dword;
-        rd->range <<= 32;
+int folk_enc_renorm(folk_enc_t *rc, uint16_t *out) {
+    int n = 0;
+    while (rc->range < FOLK_BOTTOM) {
+        /* Выводим top 16 бит */
+        out[n++] = (uint16_t)(rc->low >> 48);
+        rc->low <<= 16;
+        rc->range <<= 16;
+        /* SUBBOTIN ALIGNED TRIM:
+           range = (-low) & 0xFFFF — расстояние от low до границы 2^16.
+           Интервал [low, low+range] остаётся в одном 2^16-блоке.
+           Никакого "плывания" — математически точная траектория. */
+        if (rc->low + rc->range < rc->low) {
+            rc->range = (0ULL - rc->low) & FOLK_MASK16;
+            if (rc->range == 0) rc->range = FOLK_MASK16;
+        }
     }
-    return read_words;
+    return n;
 }
 
 static inline __attribute__((always_inline))
-uint32_t rc_dec_get_cum(const rc_dec_t *rd, uint32_t total) {
+void folk_enc_step(folk_enc_t *rc, uint16_t *out, int *nout,
+                   uint32_t cum_lo, uint32_t freq, uint32_t total) {
+    uint64_t t = rc->range / total;
+    rc->low += t * cum_lo;
+    rc->range = t * freq;
+    *nout = folk_enc_renorm(rc, out);
+}
+
+static inline __attribute__((always_inline))
+int folk_enc_flush(folk_enc_t *rc, uint16_t *out) {
+    /* Выводим 4 слова (64 бита low) */
+    out[0] = (uint16_t)(rc->low >> 48);
+    out[1] = (uint16_t)(rc->low >> 32);
+    out[2] = (uint16_t)(rc->low >> 16);
+    out[3] = (uint16_t)(rc->low);
+    return 4;
+}
+
+/* Декодер: renorm с Subbotin aligned trim (зеркально) */
+static inline __attribute__((always_inline))
+int folk_dec_renorm(folk_dec_t *rd, const uint16_t *in_buf) {
+    int n = 0;
+    while (rd->range < FOLK_BOTTOM) {
+        rd->range <<= 16;
+        rd->low <<= 16;
+        rd->code = (rd->code << 16) | in_buf[n++];
+        if (rd->low + rd->range < rd->low) {
+            rd->range = (0ULL - rd->low) & FOLK_MASK16;
+            if (rd->range == 0) rd->range = FOLK_MASK16;
+        }
+    }
+    return n;
+}
+
+static inline __attribute__((always_inline))
+int folk_dec_step(folk_dec_t *rd, const uint16_t *in_buf,
+                   uint32_t cum_lo, uint32_t freq, uint32_t total) {
+    uint64_t t = rd->range / total;
+    rd->low += t * cum_lo;
+    rd->range = t * freq;
+    return folk_dec_renorm(rd, in_buf);
+}
+
+static inline __attribute__((always_inline))
+uint32_t folk_dec_get_cum(const folk_dec_t *rd, uint32_t total) {
     uint64_t t = rd->range / total;
     if (t == 0) return 0;
-    return (uint32_t)(rd->code / t);
+    return (uint32_t)((rd->code - rd->low) / t);
 }

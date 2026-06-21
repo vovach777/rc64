@@ -1,9 +1,9 @@
 /* =========================================================================
- * RC ENCODE v2 — inplace cache/FF, статическая 14-битная модель
+ * RC ENCODE v3 — Subbotin magic (64-bit, 16-bit shift, aligned trim)
  * =========================================================================
  *
  * Usage:
- *   rc_encode_v2 <input_file> <output_file>
+ *   rc_encode <input_file> <output_file>
  *
  * Формат .rc:
  *   [4 байта]  сигнатура 'r','c', flags, rle_sym
@@ -11,8 +11,8 @@
  *   --- RLE mode ---
  *              (больше ничего)
  *   --- RC mode ---
- *   [512 байт] freq[256] uint16_t LE
- *   [4*N байт] uint32_t words LE — поток энкодера
+ *   [512 байт] freq[256] — uint16_t LE (индивидуальные частоты)
+ *   [2*N байт] uint16_t words BE — поток энкодера (big-endian)
  * ========================================================================= */
 
 #define _POSIX_C_SOURCE 199309L
@@ -30,12 +30,9 @@ static int write_u16_le(FILE *f, uint16_t v) {
     return fwrite(b, 1, 2, f) == 2 ? 0 : -1;
 }
 
-static int write_u32_le(FILE *f, uint32_t v) {
-    uint8_t b[4] = {
-        (uint8_t)(v & 0xFF), (uint8_t)((v >> 8) & 0xFF),
-        (uint8_t)((v >> 16) & 0xFF), (uint8_t)((v >> 24) & 0xFF),
-    };
-    return fwrite(b, 1, 4, f) == 4 ? 0 : -1;
+static int write_u16_be(FILE *f, uint16_t v) {
+    uint8_t b[2] = { (uint8_t)((v >> 8) & 0xFF), (uint8_t)(v & 0xFF) };
+    return fwrite(b, 1, 2, f) == 2 ? 0 : -1;
 }
 
 static int write_u64_le(FILE *f, uint64_t v) {
@@ -65,7 +62,6 @@ int main(int argc, char **argv) {
     }
     fclose(fin);
 
-    /* Подсчёт частот */
     uint32_t raw_freq[ALPHABET];
     memset(raw_freq, 0, sizeof(raw_freq));
     for (size_t i = 0; i < n; i++) raw_freq[data[i]]++;
@@ -89,13 +85,12 @@ int main(int argc, char **argv) {
 
     double t0 = (double)clock() / CLOCKS_PER_SEC;
 
-    /* RLE mode */
     if (m.is_rle) {
         double t1 = (double)clock() / CLOCKS_PER_SEC;
         long out_bytes = ftell(fout);
         fclose(fout);
         double enc_ms = (t1 - t0) * 1000.0;
-        printf("ENCODE v2 OK (RLE, sym=0x%02X)\n", m.rle_sym);
+        printf("ENCODE v3 OK (RLE, sym=0x%02X)\n", m.rle_sym);
         printf("  in:  %zu bytes\n", n);
         printf("  out: %ld bytes\n", out_bytes);
         printf("  time: %.2f ms\n", enc_ms);
@@ -111,29 +106,35 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Выделение буфера потока */
-    size_t buf_words = n / 4 + 1024;
-    uint32_t *buf = malloc(buf_words * sizeof(uint32_t));
+    /* Кодирование — uint16 output */
+    size_t buf_cap = n + 1024;
+    uint16_t *buf = malloc(buf_cap * sizeof(uint16_t));
     if (!buf) { fprintf(stderr, "malloc buf\n"); free(data); fclose(fout); return 1; }
 
-    /* Кодирование (inplace — структура сама пишет в buf через out_ptr) */
-    rc_enc_t rc;
-    rc_enc_init(&rc, buf, buf_words);
+    folk_enc_t rc;
+    folk_enc_init(&rc);
+    uint16_t *ptr = buf;
+    uint16_t outbuf[32];
 
     for (size_t i = 0; i < n; i++) {
         uint32_t cum_lo, freq;
         model_get(&m, data[i], &cum_lo, &freq);
-        rc_enc_step(&rc, cum_lo, freq, m.total);
+        int nout;
+        folk_enc_step(&rc, outbuf, &nout, cum_lo, freq, m.total);
+        memcpy(ptr, outbuf, (size_t)nout * 2);
+        ptr += nout;
     }
-    rc_enc_flush(&rc);
+    int nout = folk_enc_flush(&rc, outbuf);
+    memcpy(ptr, outbuf, (size_t)nout * 2);
+    ptr += nout;
 
-    size_t nwords = (size_t)(rc.out_ptr - buf);
+    size_t nwords = (size_t)(ptr - buf);
 
     double t1 = (double)clock() / CLOCKS_PER_SEC;
 
-    /* Запись потока */
+    /* Запись потока (big-endian uint16) */
     for (size_t i = 0; i < nwords; i++) {
-        if (write_u32_le(fout, buf[i]) != 0) {
+        if (write_u16_be(fout, buf[i]) != 0) {
             fprintf(stderr, "write word %zu\n", i);
             free(buf); free(data); fclose(fout); return 1;
         }
@@ -147,7 +148,7 @@ int main(int argc, char **argv) {
     double ratio = (n > 0) ? (double)out_bytes / (double)n * 100.0 : 0.0;
     double bpb = (n > 0) ? (double)out_bytes * 8.0 / (double)n : 0.0;
 
-    printf("ENCODE v2 OK\n");
+    printf("ENCODE v3 OK\n");
     printf("  input:   %s\n", argv[1]);
     printf("  in_size:  %zu bytes\n", n);
     printf("  out_size: %ld bytes\n", out_bytes);

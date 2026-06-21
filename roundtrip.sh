@@ -3,7 +3,6 @@
 # Usage: roundtrip.sh <build_dir>
 set -e
 BIN="${1:-.}"
-SRC="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$BIN/test"
 
