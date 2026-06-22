@@ -13,7 +13,14 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "model.h"  /* TARGET_TOTAL = 2^14 */
+
 #define SCHINDLER_BOTTOM_64 0x0000000100000000ULL
+
+/* total = 2^14 = 16384 — константа. Деление на total = сдвиг >> 14.
+   t = range >> 14 вместо range / 16384 — убирает 64-битное деление. */
+#define RC_TOTAL_BITS  14
+#define RC_TOTAL       (1ULL << RC_TOTAL_BITS)
 
 typedef struct {
     uint64_t low;
@@ -51,7 +58,8 @@ void rc_enc_init(rc_enc_t *rc, uint32_t *buf, size_t buf_words) {
 
 static inline __attribute__((always_inline))
 void rc_enc_step(rc_enc_t *rc, uint32_t cum_lo, uint32_t freq, uint32_t total) {
-    uint64_t t = rc->range / total;
+    (void)total;  /* total = RC_TOTAL = 2^14, константа */
+    uint64_t t = rc->range >> RC_TOTAL_BITS;  /* вместо / 16384 */
     uint64_t step = t * cum_lo;
 
     rc->low += step;
@@ -128,8 +136,9 @@ void rc_dec_init(rc_dec_t *rd, const uint32_t *in_buf) {
 static inline __attribute__((always_inline))
 int rc_dec_step(rc_dec_t *rd, uint32_t cum_lo, uint32_t freq,
                 uint32_t total, const uint32_t *in_buf) {
+    (void)total;
     int read_words = 0;
-    uint64_t t = rd->range / total;
+    uint64_t t = rd->range >> RC_TOTAL_BITS;  /* вместо / 16384 */
     uint64_t step = t * cum_lo;
     rd->code -= step;
     rd->range = t * freq;
@@ -143,7 +152,8 @@ int rc_dec_step(rc_dec_t *rd, uint32_t cum_lo, uint32_t freq,
 
 static inline __attribute__((always_inline))
 uint32_t rc_dec_get_cum(const rc_dec_t *rd, uint32_t total) {
-    uint64_t t = rd->range / total;
+    (void)total;
+    uint64_t t = rd->range >> RC_TOTAL_BITS;  /* вместо / 16384 */
     if (t == 0) return 0;
-    return (uint32_t)(rd->code / t);
+    return (uint32_t)(rd->code / t);  /* это деление убрать нельзя — t переменная */
 }
