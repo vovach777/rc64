@@ -146,6 +146,5 @@ int rc_dec_step(rc_dec_t *rd, uint32_t cum_lo, uint32_t freq,
 static inline __attribute__((always_inline))
 uint32_t rc_dec_get_cum(const rc_dec_t *rd, uint32_t total) {
     uint64_t t = rd->range / total;
-    if (t == 0) return 0;
     return (uint32_t)(rd->code / t);
 }
