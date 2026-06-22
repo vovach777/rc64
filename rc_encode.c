@@ -15,7 +15,7 @@
  *   [4*N байт] uint32_t words LE — поток энкодера
  * ========================================================================= */
 
-#define _POSIX_C_SOURCE 199309L
+//#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -24,6 +24,7 @@
 
 #include "rc_codec.h"
 #include "model.h"
+#include "timer.h"
 
 static int write_u16_le(FILE *f, uint16_t v) {
     uint8_t b[2] = { (uint8_t)(v & 0xFF), (uint8_t)((v >> 8) & 0xFF) };
@@ -87,11 +88,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "write len\n"); free(data); fclose(fout); return 1;
     }
 
-    double t0 = (double)clock() / CLOCKS_PER_SEC;
+    double t0 = timer_sec();
 
     /* RLE mode */
     if (m.is_rle) {
-        double t1 = (double)clock() / CLOCKS_PER_SEC;
+        double t1 = timer_sec();
         long out_bytes = ftell(fout);
         fclose(fout);
         double enc_ms = (t1 - t0) * 1000.0;
@@ -129,7 +130,7 @@ int main(int argc, char **argv) {
 
     size_t nwords = (size_t)(rc.out_ptr - buf);
 
-    double t1 = (double)clock() / CLOCKS_PER_SEC;
+    double t1 = timer_sec();
 
     /* Запись потока */
     for (size_t i = 0; i < nwords; i++) {

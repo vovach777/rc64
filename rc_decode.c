@@ -8,7 +8,7 @@
  * Декодер тот же что v1 — поток энкодера совместим.
  * ========================================================================= */
 
-#define _POSIX_C_SOURCE 199309L
+//#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -17,6 +17,7 @@
 
 #include "rc_codec.h"
 #include "model.h"
+#include "timer.h"
 
 static int read_u16_le(FILE *f, uint16_t *v) {
     uint8_t b[2];
@@ -56,14 +57,17 @@ int main(int argc, char **argv) {
     }
     size_t n = (size_t)orig_len;
 
-    double t0 = (double)clock() / CLOCKS_PER_SEC;
+    double t0 = timer_sec();
 
     uint8_t *out = malloc(n > 0 ? n : 1);
     if (!out) { fprintf(stderr, "malloc\n"); fclose(fin); return 1; }
 
     /* RLE mode */
     if (is_rle) {
+        double tdec0 = timer_sec();
         memset(out, rle_sym, n);
+        double tdec1 = timer_sec();
+
         fclose(fin);
         FILE *fout = fopen(argv[2], "wb");
         if (!fout) { perror("fopen output"); free(out); return 1; }
@@ -71,10 +75,10 @@ int main(int argc, char **argv) {
             fprintf(stderr, "fwrite\n"); fclose(fout); free(out); return 1;
         }
         fclose(fout);
-        double t1 = (double)clock() / CLOCKS_PER_SEC;
+
         printf("DECODE v2 OK (RLE, sym=0x%02X)\n", rle_sym);
         printf("  decoded: %zu bytes\n", n);
-        printf("  time:    %.2f ms\n", (t1 - t0) * 1000.0);
+        printf("  decode:  %.2f ms\n", (tdec1 - tdec0) * 1000.0);
 
         if (argc == 4) {
             FILE *fref = fopen(argv[3], "rb");
@@ -130,11 +134,12 @@ int main(int argc, char **argv) {
     fclose(fin);
     for (size_t i = nwords; i < nwords + 8; i++) words[i] = 0;
 
-    /* Декодирование */
+    /* Декодирование — чистый замер (без чтения входа и записи выхода) */
     rc_dec_t rd;
     rc_dec_init(&rd, words);
     size_t wi = 3;
 
+    double tdec0 = timer_sec();
     for (size_t i = 0; i < n; i++) {
         uint32_t cum = rc_dec_get_cum(&rd, m.total);
         uint32_t cum_lo, freq;
@@ -142,22 +147,25 @@ int main(int argc, char **argv) {
         out[i] = sym;
         wi += rc_dec_step(&rd, cum_lo, freq, m.total, &words[wi]);
     }
+    double tdec1 = timer_sec();
 
-    double t1 = (double)clock() / CLOCKS_PER_SEC;
-
+    /* Запись результата — вне замера декодирования */
     FILE *fout = fopen(argv[2], "wb");
     if (!fout) { perror("fopen output"); free(out); free(words); return 1; }
     if (n > 0 && fwrite(out, 1, n, fout) != n) {
         fprintf(stderr, "fwrite\n"); fclose(fout); free(out); free(words); return 1;
     }
     fclose(fout);
+    double ttotal1 = timer_sec();
 
+    double dec_ms = (tdec1 - tdec0) * 1000.0;
     printf("DECODE v2 OK\n");
     printf("  input:   %s (%zu words)\n", argv[1], nwords);
     printf("  decoded: %zu bytes\n", n);
-    printf("  time:    %.2f ms  (%.1f MB/s)\n",
-           (t1 - t0) * 1000.0,
-           n > 0 ? (double)n / ((t1 - t0) * 1048576.0) : 0.0);
+    printf("  decode:  %.2f ms  (%.1f MB/s)\n",
+           dec_ms,
+           n > 0 ? (double)n / (dec_ms * 1048576.0 / 1000.0) : 0.0);
+    printf("  total:   %.2f ms  (incl. I/O)\n", (ttotal1 - t0) * 1000.0);
 
     /* Verify */
     if (argc == 4) {

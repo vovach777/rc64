@@ -26,6 +26,7 @@
 #include <time.h>
 
 #include "model.h"
+#include "timer.h"
 
 #define SCHINDLER_BOTTOM_64 0x0000000100000000ULL
 
@@ -163,7 +164,7 @@ int main(int argc, char **argv) {
     memset(&st, 0, sizeof(st));
     st.total_symbols = n;
 
-    double t0 = (double)clock() / CLOCKS_PER_SEC;
+    double t0 = timer_sec();
 
     if (m.is_rle) {
         /* RLE: кодер не работает, выход = 12 байт */
@@ -186,7 +187,7 @@ int main(int argc, char **argv) {
     }
     diag_enc_flush(&rc, &st);
 
-    double t1 = (double)clock() / CLOCKS_PER_SEC;
+    double t1 = timer_sec();
     double elapsed_ms = (t1 - t0) * 1000.0;
 
     /* --- Оценка выходного размера --- */

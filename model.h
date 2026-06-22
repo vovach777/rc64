@@ -119,20 +119,28 @@ static inline void model_get(const model_t *m, uint8_t sym,
    Возвращает символ, записывает cum_lo и freq. */
 static inline uint8_t model_find(const model_t *m, uint32_t cum,
                                   uint32_t *cum_lo, uint32_t *freq) {
-    /* Линейный поиск по кумулятивной таблице.
-       cum < m->total гарантируется вызывающим кодом. */
-    for (int i = 0; i < ALPHABET; i++) {
-        if (cum < m->cum[i + 1]) {
-            *cum_lo = m->cum[i];
-            *freq  = (uint32_t)m->cum[i + 1] - m->cum[i];
-            return (uint8_t)i;
-        }
-    }
-    /* Fallback: последний символ */
-    int last = ALPHABET - 1;
-    *cum_lo = m->cum[last];
-    *freq  = (uint32_t)m->cum[last + 1] - m->cum[last];
-    return (uint8_t)last;
+    const uint16_t* base = m->cum;
+    // Компилятор (GCC/Clang) превратит тернарные операторы в инструкции
+    // условной пересылки (MOVEQZ / MOVNEZ для Xtensa),
+    // полностью исключая ветвления!
+    /* 8 шагов (128..1) покрывают все 256 индексов: 128+64+32+16+8+4+2+1 = 255.
+       base сдвигается, пока cum >= cum[base+k]; итоговый base указывает на
+       cum[s], где s — наибольший индекс с cum[s] <= cum_value. */
+    base += (cum >= base[128]) ? 128 : 0;
+    base += (cum >= base[64]) ? 64 : 0;
+    base += (cum >= base[32]) ? 32 : 0;
+    base += (cum >= base[16]) ? 16 : 0;
+    base += (cum >= base[8]) ? 8 : 0;
+    base += (cum >= base[4]) ? 4 : 0;
+    base += (cum >= base[2]) ? 2 : 0;
+    base += (cum >= base[1]) ? 1 : 0;
+
+    uint32_t s = base - m->cum;
+    *cum_lo = m->cum[s];
+    *freq  = (uint32_t)m->cum[s + 1] - m->cum[s];
+
+    return (uint8_t)s;
+
 }
 
 #endif /* MODEL_H */
