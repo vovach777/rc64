@@ -162,14 +162,15 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* RC mode: чтение частот */
+    /* RC mode: чтение кумулятивных частот cum[1..256] (256 значений).
+       cum[0]=0 — константа, не хранится. */
     model_t m;
     m.is_rle = 0;
     m.cum[0] = 0;
-    for (int i = 0; i < ALPHABET; i++) {
-        uint16_t f;
-        if (read_u16_le(fin, &f) != 0) { fprintf(stderr, "read freq\n"); free(out); fclose(fin); return 1; }
-        m.cum[i + 1] = m.cum[i] + f;
+    for (int i = 1; i <= ALPHABET; i++) {
+        uint16_t c;
+        if (read_u16_le(fin, &c) != 0) { fprintf(stderr, "read cum\n"); free(out); fclose(fin); return 1; }
+        m.cum[i] = c;
     }
     m.total = m.cum[ALPHABET];
 

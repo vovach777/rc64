@@ -11,7 +11,8 @@
  *   --- RLE mode ---
  *              (больше ничего)
  *   --- RC mode ---
- *   [512 байт] freq[256] uint16_t LE
+ *   [512 байт] cum[1..256] — uint16_t LE (кумулятивные частоты)
+ *              cum[0]=0 не хранится (всегда константа)
  *   [4*N байт] uint32_t words LE — поток энкодера
  * ========================================================================= */
 
@@ -104,11 +105,12 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* RC mode: запись частот */
-    for (int i = 0; i < ALPHABET; i++) {
-        uint16_t f = (uint16_t)(m.cum[i + 1] - m.cum[i]);
-        if (write_u16_le(fout, f) != 0) {
-            fprintf(stderr, "write freq\n"); free(data); fclose(fout); return 1;
+    /* RC mode: запись кумулятивных частот cum[1..256] (256 значений).
+       cum[0]=0 не хранится — декодер ставит сам. */
+    for (int i = 1; i <= ALPHABET; i++) {
+        uint16_t c = m.cum[i];
+        if (write_u16_le(fout, c) != 0) {
+            fprintf(stderr, "write cum\n"); free(data); fclose(fout); return 1;
         }
     }
 
