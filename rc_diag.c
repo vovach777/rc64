@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < n; i++) {
         uint32_t cum_lo, freq;
         model_get(&m, data[i], &cum_lo, &freq);
-        diag_encode_step(&rc, &st, cum_lo, freq, m.total);
+        diag_encode_step(&rc, &st, cum_lo, freq, TARGET_TOTAL);
     }
     diag_enc_flush(&rc, &st);
 
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
     printf("%d / 256\n", active);
     printf("\n");
     printf("--- МОДЕЛЬ ---\n");
-    printf("  total:         %u (2^%.0f)\n", m.total, log2((double)m.total));
+    printf("  total:         %u (2^%.0f)\n", TARGET_TOTAL, log2((double)TARGET_TOTAL));
     printf("  entropy H:     %.6f bits/symbol\n", entropy);
     printf("  theory bpb:    %.6f\n", theory_bpb);
     printf("  RLE:           %s\n", m.is_rle ? "yes" : "no");

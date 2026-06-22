@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
         if (read_u16_le(fin, &c) != 0) { fprintf(stderr, "read cum\n"); free(out); fclose(fin); return 1; }
         m.cum[i] = c;
     }
-    m.total = m.cum[ALPHABET];
+    /* cum[256] прочитан из файла — это total */
 
     /* Чтение всего сжатого потока в память */
     long header_sz = 4 + 8 + (long)(ALPHABET * 2);

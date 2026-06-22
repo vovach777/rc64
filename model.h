@@ -31,10 +31,9 @@
    cum_lo(sym) = cum[sym], freq(sym) = cum[sym+1] - cum[sym].
    Всё в uint16_t — 14 бит достаточно. */
 typedef struct {
-    uint16_t cum[ALPHABET + 1];
-    uint32_t total;            /* всегда TARGET_TOTAL после build */
-    int      is_rle;            /* 1 = RLE mode (один символ) */
-    uint8_t  rle_sym;           /* символ для RLE */
+    uint16_t cum[ALPHABET + 1];  /* cum[0]=0, cum[256]=total */
+    int      is_rle;
+    uint8_t  rle_sym;
 } model_t;
 
 /* Построить модель по сырым частотам.
@@ -43,7 +42,6 @@ typedef struct {
    Если n_active <= 1: is_rle=1. */
 static inline void model_build(model_t *m, const uint32_t raw_freq[ALPHABET]) {
     memset(m->cum, 0, sizeof(m->cum));
-    m->total = TARGET_TOTAL;
     m->is_rle = 0;
     m->rle_sym = 0;
 
@@ -105,7 +103,7 @@ static inline void model_build(model_t *m, const uint32_t raw_freq[ALPHABET]) {
     for (int i = 0; i < ALPHABET; i++) {
         m->cum[i + 1] = m->cum[i] + (uint16_t)scaled[i];
     }
-    m->total = m->cum[ALPHABET];   /* должно быть TARGET_TOTAL */
+    /* total = cum[ALPHABET], хранится неявно */
 }
 
 /* Получить cum_lo и freq для символа sym. */
