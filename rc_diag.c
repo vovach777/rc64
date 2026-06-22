@@ -164,7 +164,8 @@ int main(int argc, char **argv) {
     memset(&st, 0, sizeof(st));
     st.total_symbols = n;
 
-    double t0 = timer_sec();
+    int64_t tfreq = timer_freq();
+    int64_t t0 = timer_ticks();
 
     if (m.is_rle) {
         /* RLE: кодер не работает, выход = 12 байт */
@@ -187,8 +188,8 @@ int main(int argc, char **argv) {
     }
     diag_enc_flush(&rc, &st);
 
-    double t1 = timer_sec();
-    double elapsed_ms = (t1 - t0) * 1000.0;
+    int64_t t1 = timer_ticks();
+    double elapsed_ms = (double)(t1 - t0) * 1000.0 / (double)tfreq;
 
     /* --- Оценка выходного размера --- */
     /* header: 4 + 8 = 12. freq table: 512. total = 524.

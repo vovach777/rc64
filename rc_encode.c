@@ -89,14 +89,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "write len\n"); free(data); fclose(fout); return 1;
     }
 
-    double t0 = timer_sec();
+    int64_t freq = timer_freq();
+    int64_t t0 = timer_ticks();
 
     /* RLE mode */
     if (m.is_rle) {
-        double t1 = timer_sec();
+        int64_t t1 = timer_ticks();
         long out_bytes = ftell(fout);
         fclose(fout);
-        double enc_ms = (t1 - t0) * 1000.0;
+        double enc_ms = (double)(t1 - t0) * 1000.0 / (double)freq;
         printf("ENCODE v2 OK (RLE, sym=0x%02X)\n", m.rle_sym);
         printf("  in:  %zu bytes\n", n);
         printf("  out: %ld bytes\n", out_bytes);
@@ -132,7 +133,7 @@ int main(int argc, char **argv) {
 
     size_t nwords = (size_t)(rc.out_ptr - buf);
 
-    double t1 = timer_sec();
+    int64_t t1 = timer_ticks();
 
     /* Запись потока */
     for (size_t i = 0; i < nwords; i++) {
@@ -146,7 +147,7 @@ int main(int argc, char **argv) {
     fclose(fout);
     free(buf);
 
-    double enc_ms = (t1 - t0) * 1000.0;
+    double enc_ms = (double)(t1 - t0) * 1000.0 / (double)freq;
     double ratio = (n > 0) ? (double)out_bytes / (double)n * 100.0 : 0.0;
     double bpb = (n > 0) ? (double)out_bytes * 8.0 / (double)n : 0.0;
 

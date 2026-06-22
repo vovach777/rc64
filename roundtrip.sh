@@ -1,9 +1,8 @@
 #!/bin/sh
-# Roundtrip test: encode + decode + verify on all 6 datasets
+# Roundtrip test: encode + decode + verify (cmp) on all 6 datasets
 # Usage: roundtrip.sh <build_dir>
 set -e
 BIN="${1:-.}"
-SRC="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$BIN/test"
 
@@ -19,7 +18,13 @@ for ds in lorem ccode english russian repeat random; do
     esac
     "$BIN/gen_data" $i 200000 "$BIN/test/$ds.orig"
     "$BIN/rc_encode" "$BIN/test/$ds.orig" "$BIN/test/$ds.rc"
-    "$BIN/rc_decode" "$BIN/test/$ds.rc" "$BIN/test/$ds.dec" "$BIN/test/$ds.orig"
+    "$BIN/rc_decode" "$BIN/test/$ds.rc" "$BIN/test/$ds.dec"
+    if cmp -s "$BIN/test/$ds.orig" "$BIN/test/$ds.dec"; then
+        echo "  ROUNDTRIP OK: $(wc -c < "$BIN/test/$ds.orig") bytes"
+    else
+        echo "  ROUNDTRIP FAIL"
+        exit 1
+    fi
     echo
 done
 

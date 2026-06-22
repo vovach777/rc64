@@ -1,9 +1,10 @@
 /* =========================================================================
- * TIMER — кроссплатформенный высокоточный таймер
+ * TIMER — кроссплатформенный, int64 тики
  * =========================================================================
  *
- * macOS/Linux: clock_gettime(CLOCK_MONOTONIC)
- * Windows:     QueryPerformanceCounter
+ * int64_t timer_ticks(void)  — текущее значение счётчика
+ * int64_t timer_freq(void)   — тиков в секунду
+ * elapsed_ms = (t1 - t0) * 1000 / freq
  * ========================================================================= */
 
 #ifndef TIMER_H
@@ -15,23 +16,30 @@
 
 #include <windows.h>
 
-static inline double timer_sec(void) {
-    static LARGE_INTEGER freq = {0};
-    if (freq.QuadPart == 0)
-        QueryPerformanceFrequency(&freq);
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    return (double)now.QuadPart / (double)freq.QuadPart;
+static inline int64_t timer_freq(void) {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return (int64_t)f.QuadPart;
+}
+
+static inline int64_t timer_ticks(void) {
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return (int64_t)c.QuadPart;
 }
 
 #else
 
 #include <time.h>
 
-static inline double timer_sec(void) {
+static inline int64_t timer_freq(void) {
+    return 1000000000LL;  /* CLOCK_MONOTONIC = наносекунды */
+}
+
+static inline int64_t timer_ticks(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
 #endif
