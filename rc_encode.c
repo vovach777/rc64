@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < n; i++) {
         uint32_t cum_lo, freq;
         model_get(&m, data[i], &cum_lo, &freq);
-        rc_enc_step(&rc, cum_lo, freq, m.total);
+        rc_enc_step(&rc, cum_lo, freq, TARGET_TOTAL);
     }
     rc_enc_flush(&rc);
 

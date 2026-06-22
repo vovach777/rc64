@@ -189,13 +189,13 @@ int main(int argc, char **argv) {
        in_buf = &st.buf[st.buf_pos], после чтения buf_pos++. */
     double tdec0 = timer_sec();
     for (size_t i = 0; i < n; i++) {
-        uint32_t cum = rc_dec_get_cum(&rd, m.total);
+        uint32_t cum = rc_dec_get_cum(&rd, TARGET_TOTAL);
         uint32_t cum_lo, freq;
         uint8_t sym = model_find(&m, cum, &cum_lo, &freq);
         out[i] = sym;
 
         /* rc_dec_step inline: читает 0 или 1 слово из streaming буфера */
-        uint64_t t = rd.range >> RC_TOTAL_BITS;
+        uint64_t t = rd.range / TARGET_TOTAL;
         uint64_t step = t * cum_lo;
         rd.code -= step;
         rd.range = t * freq;
