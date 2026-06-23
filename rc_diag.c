@@ -24,6 +24,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <inttypes.h>
 
 #include "model.h"
 #include "timer.h"
@@ -154,8 +155,11 @@ int main(int argc, char **argv) {
     double theory_bpb = entropy;  /* bits per byte */
 
     /* --- Построение модели --- */
-    model_t m;
-    model_build(&m, raw_freq);
+    cums_t m;
+    int res = model_build(m, raw_freq);
+    if (res < 0) {
+        fprintf(stderr, "model_build failed: %d\n", res); free(data); return 1;
+    }
 
     /* --- Кодирование со счётчиками --- */
     diag_enc_t rc;
@@ -167,11 +171,11 @@ int main(int argc, char **argv) {
     int64_t tfreq = timer_freq();
     int64_t t0 = timer_ticks();
 
-    if (m.is_rle) {
+    if (res) {
         /* RLE: кодер не работает, выход = 12 байт */
         printf("=== RC DIAG: %s ===\n", argv[1]);
         printf("\n");
-        printf("RLE mode (single symbol 0x%02X)\n", m.rle_sym);
+        printf("RLE mode (single symbol 0x%02X)\n", m[1]);
         printf("  input:       %zu bytes\n", n);
         printf("  output:      12 bytes (header only)\n");
         printf("  ratio:       %.6f%%\n", n > 0 ? 12.0 / (double)n * 100.0 : 0.0);
@@ -182,8 +186,8 @@ int main(int argc, char **argv) {
     }
 
     for (size_t i = 0; i < n; i++) {
-        uint32_t cum_lo, freq;
-        model_get(&m, data[i], &cum_lo, &freq);
+        uint16_t cum_lo, freq;
+        model_get(m, data[i], &cum_lo, &freq);
         diag_encode_step(&rc, &st, cum_lo, freq, TARGET_TOTAL);
     }
     diag_enc_flush(&rc, &st);
@@ -227,7 +231,7 @@ int main(int argc, char **argv) {
     printf("  total:         %u (2^%.0f)\n", TARGET_TOTAL, log2((double)TARGET_TOTAL));
     printf("  entropy H:     %.6f bits/symbol\n", entropy);
     printf("  theory bpb:    %.6f\n", theory_bpb);
-    printf("  RLE:           %s\n", m.is_rle ? "yes" : "no");
+    printf("  RLE:           %s\n", !!m[0] ? "yes" : "no");
     printf("\n");
     printf("--- ВЕТКИ КОДЕРА ---\n");
     printf("  CARRY (low < step):\n");

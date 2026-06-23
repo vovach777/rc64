@@ -14,171 +14,141 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-
+#include <inttypes.h>
+#  define ZPL_NANO
+#define ZPL_IMPLEMENTATION
+#include "zpl.h"
 #include "rc_codec.h"
 #include "model.h"
-#include "timer.h"
 
 #define OUT_BUF_SIZE (16 * 1024)  /* 16KB выходной буфер */
 
-static int read_u16_le(FILE *f, uint16_t *v) {
-    uint8_t b[2];
-    if (fread(b, 1, 2, f) != 2) return -1;
-    *v = (uint16_t)b[0] | ((uint16_t)b[1] << 8);
-    return 0;
-}
 
 int main(int argc, char **argv) {
+    static uint8_t out_buf[OUT_BUF_SIZE];
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <input.rc> <output>\n", argv[0]);
         return 1;
     }
 
-    int64_t freq = timer_freq();
-    int64_t t_total0 = timer_ticks();
 
-    FILE *fin = fopen(argv[1], "rb");
-    if (!fin) { perror("fopen input"); return 1; }
+    zpl_file fin;
+    zpl_file_error err = zpl_file_open(&fin, argv[1]);
+
+    if (err) { perror("fopen input"); return err; }
+
 
     /* Заголовок */
     uint8_t sig[4];
-    if (fread(sig, 1, 4, fin) != 4) { fprintf(stderr, "read sig\n"); fclose(fin); return 1; }
+
+    if (zpl_file_read(&fin,sig,sizeof(sig)) != 1) {
+        fprintf(stderr, "read sig\n");
+        zpl_file_close(&fin);
+        return 1;
+    }
     if (sig[0] != 'r' || sig[1] != 'c') {
-        fprintf(stderr, "bad signature\n"); fclose(fin); return 1;
+        fprintf(stderr, "bad signature\n"); zpl_file_close(&fin);; return 1;
     }
     int is_rle = sig[2] & 0x01;
     uint8_t rle_sym = sig[3];
 
     uint64_t orig_len = 0;
-    for (int i = 0; i < 8; i++) {
-        int c = fgetc(fin);
-        if (c == EOF) { fprintf(stderr, "read len\n"); fclose(fin); return 1; }
-        orig_len |= (uint64_t)(uint8_t)c << (8 * i);
+    if (zpl_file_read(&fin, &orig_len, sizeof(orig_len)) != 1)  {
+        fprintf(stderr, "read len\n"); zpl_file_close(&fin); return 1;
     }
     size_t n = (size_t)orig_len;
-
-    uint8_t *out = malloc(n > 0 ? n : 1);
-    if (!out) { fprintf(stderr, "malloc\n"); fclose(fin); return 1; }
+    if (n==0) {
+        zpl_file_close(&fin);
+        zpl_file_create(&fin, argv[2]);
+        zpl_file_close(&fin);
+        return 0;
+    }
 
     /* RLE mode */
     if (is_rle) {
-        int64_t t0 = timer_ticks();
-        memset(out, rle_sym, n);
-        int64_t t1 = timer_ticks();
-
-        fclose(fin);
-        FILE *fout = fopen(argv[2], "wb");
-        if (!fout) { perror("fopen output"); free(out); return 1; }
-        if (n > 0 && fwrite(out, 1, n, fout) != n) {
-            fprintf(stderr, "fwrite\n"); fclose(fout); free(out); return 1;
+        zpl_file_close(&fin);
+        if ( zpl_file_create(&fin, argv[2]) ) { perror("fopen output");  return 1; }
+        while (n--) {
+            zpl_file_write(&fin, &rle_sym, 1);
         }
-        fclose(fout);
-
-        double dec_ms = (double)(t1 - t0) * 1000.0 / (double)freq;
-        printf("DECODE v2 OK (RLE, sym=0x%02X)\n", rle_sym);
-        printf("  decoded: %zu bytes\n", n);
-        printf("  decode:  %.2f ms\n", dec_ms);
-
-        free(out);
+        zpl_file_close(&fin);
+        printf("DECODE v2 OK (RLE Mode)\n");
         return 0;
     }
 
     /* RC mode: чтение кумулятивных частот cum[1..256] */
-    model_t m;
-    m.is_rle = 0;
-    m.cum[0] = 0;
-    for (int i = 1; i <= ALPHABET; i++) {
-        uint16_t c;
-        if (read_u16_le(fin, &c) != 0) { fprintf(stderr, "read cum\n"); free(out); fclose(fin); return 1; }
-        m.cum[i] = c;
+    cums_t m = {0};
+    zpl_file_read(&fin, m + 1, sizeof(m[0]) * ALPHABET);
+    zpl_i64 ac_data_len = (zpl_file_size(&fin) - 524);
+
+    zpl_u64 t0xx = zpl_time_rel_ms() + 100;
+    zpl_u64 dddd = zpl_rdtsc();
+    while (zpl_time_rel_ms() < t0xx);
+    zpl_u64 zpl_rdtsc_freq = (zpl_rdtsc() - dddd)*10;
+    printf("CPU freq = %1.1f Mhz\n", zpl_rdtsc_freq / 1000000.0f);
+
+    uint64_t ac_u32_len = ac_data_len / sizeof(uint32_t) + 4;
+    uint32_t *words = (uint32_t *) malloc( ac_u32_len * sizeof(uint32_t)  );
+    if ( words == NULL) {
+        fprintf(stderr, "malloc words\n");
+        zpl_file_close(&fin);
+        return 1;
     }
-    /* cum[256] прочитан из файла — это total */
+    uint8_t *u8_p =(uint8_t*)words;
+    int64_t u8_len = ac_data_len;
+    while ( u8_len> 0 ) {
+        uint32_t chunk = (uint32_t)zpl_min(u8_len, 0x1000000LL);
 
-    /* Чтение всего сжатого потока в память */
-    long header_sz = 4 + 8 + (long)(ALPHABET * 2);
-    fseek(fin, 0, SEEK_END);
-    long fend = ftell(fin);
-    fseek(fin, header_sz, SEEK_SET);
-    long body_bytes = fend - header_sz;
-    if (body_bytes < 0) body_bytes = 0;
-    size_t nwords = (size_t)(body_bytes / 4);
-    uint32_t *words = malloc((nwords + 8) * sizeof(uint32_t));
-    if (!words) { fprintf(stderr, "malloc words\n"); free(out); fclose(fin); return 1; }
-
-    /* Bulk read: читаем сырые байты, конвертируем LE → uint32 */
-    {
-        size_t got = fread(words, 1, nwords * 4, fin);
-        (void)got;
-        fclose(fin);
-        /* in-place LE → uint32 (endian-safe) */
-        uint8_t *raw = (uint8_t *)words;
-        for (size_t i = 0; i < nwords; i++) {
-            uint8_t *b = raw + i * 4;
-            words[i] = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
-                       ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+        if (zpl_file_read (&fin,u8_p , chunk) != 1) {
+           fprintf(stderr, "read error\n"); zpl_file_close(&fin);
+           free(words);
+           return 1;
         }
+       u8_p  += chunk;
+       u8_len -= chunk;
     }
-    for (size_t i = nwords; i < nwords + 8; i++) words[i] = 0;
+    zpl_file_close(&fin);
+    if ( zpl_file_create(&fin, argv[2]) ) {
+        perror("fopen output"); free(words); return 1;
+    }
 
     /* Декодирование — чистый замер.
        Декодер пишет в out[] (в памяти). Сброс на диск порциями 16KB
        через статический буфер, во время сброса таймер выключен. */
+    uint32_t* words_p = words;
     rc_dec_t rd;
-    rc_dec_init(&rd, words);
-    size_t wi = 3;
+    words_p += rc_dec_init(&rd, words_p);
 
-    FILE *fout = fopen(argv[2], "wb");
-    if (!fout) { perror("fopen output"); free(out); free(words); return 1; }
-
-    int64_t t_dec0 = timer_ticks();
-    size_t flushed = 0;  /* сколько байт уже сброшено на диск */
-    for (size_t i = 0; i < n; i++) {
-        uint32_t cum = rc_dec_get_cum(&rd, TARGET_TOTAL);
-        uint32_t cum_lo, freq;
-        uint8_t sym = model_find(&m, cum, &cum_lo, &freq);
-        out[i] = sym;
-
-        /* rc_dec_step inline */
-        uint64_t t = rd.range / TARGET_TOTAL;
-        uint64_t step = t * cum_lo;
-        rd.code -= step;
-        rd.range = t * freq;
-        if (rd.range < SCHINDLER_BOTTOM_64) {
-            uint32_t new_dword = words[wi++];
-            rd.code = (rd.code << 32) | new_dword;
-            rd.range <<= 32;
+    zpl_u64 total_ticks = 0;
+    for (size_t i = 0; i != n;) {
+        uint32_t block_size = zpl_min(n - i, OUT_BUF_SIZE);
+        i += block_size;
+        zpl_u64 t0 = zpl_rdtsc();
+        for (uint32_t n=0; n < block_size; ++n) {
+            uint16_t cum = rc_dec_get_cum(&rd, TARGET_TOTAL);
+            uint16_t cum_lo, freq;
+            uint8_t sym = model_find(m, cum, &cum_lo, &freq);
+            words_p += rc_dec_step(&rd, cum_lo, freq, TARGET_TOTAL, words_p);
+            out_buf[n] = sym;
         }
-
-        /* Сброс 16KB порции — ВНЕ замера */
-        size_t ready = i + 1 - flushed;
-        if (ready >= OUT_BUF_SIZE) {
-            int64_t t_pause = timer_ticks();
-            fwrite(out + flushed, 1, OUT_BUF_SIZE, fout);
-            int64_t t_resume = timer_ticks();
-            t_dec0 += (t_resume - t_pause);  /* вычитаем время I/O */
-            flushed += OUT_BUF_SIZE;
+        total_ticks += zpl_rdtsc()-t0;
+        //fwrite(out_buf, 1, block_size, fout);
+        if ( zpl_file_write(&fin, out_buf, block_size) != 1 ) {
+            perror("fwrite error"); zpl_file_close(&fin); free(words); return 1;
         }
+        printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)", i + 1, n, 100.0 * (i + 1) / n);
     }
-    int64_t t_dec1 = timer_ticks();
+    printf("\n");
+    uint32_t ticks_per_symbol = total_ticks / n;
+    uint64_t total_dec_time = total_ticks*1000 / zpl_rdtsc_freq;
 
-    /* Дописываем остаток — вне замера */
-    if (flushed < n) {
-        fwrite(out + flushed, 1, n - flushed, fout);
-    }
-    fclose(fout);
-    int64_t t_total1 = timer_ticks();
-
+    //fclose(fout);
+    zpl_file_close(&fin);
     free(words);
 
-    double dec_ms = (double)(t_dec1 - t_dec0) * 1000.0 / (double)freq;
-    double total_ms = (double)(t_total1 - t_total0) * 1000.0 / (double)freq;
     printf("DECODE v2 OK\n");
-    printf("  input:   %s (%zu words)\n", argv[1], nwords);
-    printf("  decoded: %zu bytes\n", n);
-    printf("  decode:  %.2f ms  (%.1f MB/s)\n",
-           dec_ms, n > 0 ? (double)n / (dec_ms * 1048576.0 / 1000.0) : 0.0);
-    printf("  total:   %.2f ms  (incl. I/O)\n", total_ms);
-
-    free(out);
+    printf("  decode:  %" PRIu64 " ms  (%.1f MB/s)\n", total_dec_time, n * ( 1. / 1024.0 ) * (1. / total_dec_time));
+    printf("        :  %u  ticks per symbol\n", ticks_per_symbol);
+    printf("  memory:  %.2f MB\n", (float)ac_u32_len / (1024.0f * 1024.0f / 4));
     return 0;
 }

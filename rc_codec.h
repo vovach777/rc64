@@ -122,9 +122,10 @@ void rc_enc_flush(rc_enc_t *rc) {
 /* --- Декодер --- */
 
 static inline __attribute__((always_inline))
-void rc_dec_init(rc_dec_t *rd, const uint32_t *in_buf) {
+int rc_dec_init(rc_dec_t *rd, const uint32_t *in_buf) {
     rd->range = 0xFFFFFFFFFFFFFFFFULL;
     rd->code = ((uint64_t)in_buf[1] << 32) | in_buf[2];
+    return 3;
 }
 
 static inline __attribute__((always_inline))

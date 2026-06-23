@@ -58,11 +58,11 @@ int main(int argc, char **argv) {
     fseek(fin, 0, SEEK_END);
     long fsize = ftell(fin);
     fseek(fin, 0, SEEK_SET);
-    if (fsize < 0) { fprintf(stderr, "ftell failed\n"); fclose(fin); return 1; }
-    size_t n = (size_t)fsize;
-    uint8_t *data = malloc(n > 0 ? n : 1);
+    if (fsize <= 0) { fprintf(stderr, "ftell failed\n"); fclose(fin); return 1; }
+    uint64_t n = (size_t)fsize;
+    uint8_t *data = malloc(fsize);
     if (!data) { fprintf(stderr, "malloc failed\n"); fclose(fin); return 1; }
-    if (n > 0 && fread(data, 1, n, fin) != n) {
+    if (fread(data, 1, n, fin) != n) {
         fprintf(stderr, "fread failed\n"); free(data); fclose(fin); return 1;
     }
     fclose(fin);
@@ -72,20 +72,23 @@ int main(int argc, char **argv) {
     memset(raw_freq, 0, sizeof(raw_freq));
     for (size_t i = 0; i < n; i++) raw_freq[data[i]]++;
 
-    model_t m;
-    model_build(&m, raw_freq);
+    cums_t m;
+    int is_rle = model_build(m, raw_freq);
+    if (is_rle < 0 ) {
+        fprintf(stderr, "model_build failed\n"); free(data); return 1;
+    }
 
     FILE *fout = fopen(argv[2], "wb");
     if (!fout) { perror("fopen output"); free(data); return 1; }
 
     /* Заголовок */
-    uint8_t flags = m.is_rle ? 0x01 : 0x00;
-    uint8_t rle_sym = m.is_rle ? m.rle_sym : 0;
+    uint8_t flags = !!m[0];
+    uint8_t rle_sym = m[1];
     uint8_t sig[4] = { 'r', 'c', flags, rle_sym };
     if (fwrite(sig, 1, 4, fout) != 4) {
         fprintf(stderr, "write sig\n"); free(data); fclose(fout); return 1;
     }
-    if (write_u64_le(fout, (uint64_t)n) != 0) {
+    if (fwrite(&n,sizeof(n), 1, fout) != 1) {
         fprintf(stderr, "write len\n"); free(data); fclose(fout); return 1;
     }
 
@@ -93,12 +96,12 @@ int main(int argc, char **argv) {
     int64_t t0 = timer_ticks();
 
     /* RLE mode */
-    if (m.is_rle) {
+    if (is_rle) {
         int64_t t1 = timer_ticks();
         long out_bytes = ftell(fout);
         fclose(fout);
         double enc_ms = (double)(t1 - t0) * 1000.0 / (double)freq;
-        printf("ENCODE v2 OK (RLE, sym=0x%02X)\n", m.rle_sym);
+        printf("ENCODE v2 OK (RLE, sym=0x%02X)\n", rle_sym);
         printf("  in:  %zu bytes\n", n);
         printf("  out: %ld bytes\n", out_bytes);
         printf("  time: %.2f ms\n", enc_ms);
@@ -107,17 +110,14 @@ int main(int argc, char **argv) {
     }
 
     /* RC mode: запись кумулятивных частот cum[1..256] (256 значений).
-       cum[0]=0 не хранится — декодер ставит сам. */
-    for (int i = 1; i <= ALPHABET; i++) {
-        uint16_t c = m.cum[i];
-        if (write_u16_le(fout, c) != 0) {
-            fprintf(stderr, "write cum\n"); free(data); fclose(fout); return 1;
-        }
+    cum[0]=0 не хранится — декодер ставит сам. */
+    if ( fwrite(m+1,sizeof(m[0]),ALPHABET,fout) != ALPHABET) {
+        fprintf(stderr, "write cum\n"); free(data); fclose(fout); return 1;
     }
 
     /* Выделение буфера потока */
-    size_t buf_words = n / 4 + 1024;
-    uint32_t *buf = malloc(buf_words * sizeof(uint32_t));
+    size_t buf_words = n / 4 + 256;
+    uint32_t *buf = malloc(buf_words*4);
     if (!buf) { fprintf(stderr, "malloc buf\n"); free(data); fclose(fout); return 1; }
 
     /* Кодирование (inplace — структура сама пишет в buf через out_ptr) */
@@ -125,7 +125,7 @@ int main(int argc, char **argv) {
     rc_enc_init(&rc, buf, buf_words);
 
     for (size_t i = 0; i < n; i++) {
-        uint32_t cum_lo, freq;
+        uint16_t cum_lo, freq;
         model_get(&m, data[i], &cum_lo, &freq);
         rc_enc_step(&rc, cum_lo, freq, TARGET_TOTAL);
     }
@@ -136,11 +136,9 @@ int main(int argc, char **argv) {
     int64_t t1 = timer_ticks();
 
     /* Запись потока */
-    for (size_t i = 0; i < nwords; i++) {
-        if (write_u32_le(fout, buf[i]) != 0) {
-            fprintf(stderr, "write word %zu\n", i);
+    if (fwrite(buf, sizeof(buf[0]), nwords, fout) != nwords) {
+            fprintf(stderr, "write word\n");
             free(buf); free(data); fclose(fout); return 1;
-        }
     }
 
     long out_bytes = ftell(fout);
