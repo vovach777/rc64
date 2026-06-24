@@ -8,6 +8,12 @@
  *
  * Структура содержит указатели на выходной буфер — память выделяется
  * один раз вызывающим кодом, перевыделения нет.
+ *
+ * ВАЖНО: placeholder-слово в начале буфера убрано. cache_ptr в init
+ * указывает на static dummy (мусорная переменная в файле).
+ * После первого safe-emit cache_ptr переставляется на реальную позицию
+ * в буфере. Если safe-emit не произошло (короткий файл) — flush пишет
+ * в dummy, но cache в этом случае всегда 0, терять нечего.
  * ========================================================================= */
 
 #include <stdint.h>
@@ -21,7 +27,7 @@ typedef struct {
     uint64_t low;
     uint64_t range;
     uint32_t cache;         /* значение cache слова */
-    uint32_t *cache_ptr;    /* указатель на cache слово в буфере */
+    uint32_t *cache_ptr;    /* указатель на cache слово в буфере (или на dummy в init) */
     uint32_t *ff_start;     /* указатель на начало блока FF */
     uint32_t ff_count;      /* кол-во FF слов в блоке */
     uint32_t *out_ptr;      /* текущая позиция записи в буфере */
@@ -44,9 +50,11 @@ void rc_enc_init(rc_enc_t *rc, uint32_t *buf, size_t buf_words) {
     rc->out_ptr = buf;
     rc->out_end = buf + buf_words;
     rc->buf_start = buf;
-    /* Резервируем слово под cache — запишем в flush */
-    rc->cache_ptr = rc->out_ptr;
-    *rc->out_ptr++ = 0;
+    /* Мусорная переменная для cache_ptr до первого safe-emit.
+        flush пишет сюда cache (=0, т.к. без renorm carry невозможен).
+        static — одна на всю программу, не загрязняет структуру. */
+    static uint32_t rc_enc_cache_dummy = 0;
+    rc->cache_ptr = &rc_enc_cache_dummy;
     rc->ff_start = NULL;
     rc->ff_count = 0;
 }
@@ -124,8 +132,8 @@ void rc_enc_flush(rc_enc_t *rc) {
 static inline __attribute__((always_inline))
 int rc_dec_init(rc_dec_t *rd, const uint32_t *in_buf) {
     rd->range = 0xFFFFFFFFFFFFFFFFULL;
-    rd->code = ((uint64_t)in_buf[1] << 32) | in_buf[2];
-    return 3;
+    rd->code = ((uint64_t)in_buf[0] << 32) | in_buf[1];
+    return 2;
 }
 
 static inline __attribute__((always_inline))
