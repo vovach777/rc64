@@ -10,7 +10,8 @@ Inplace cache/FF — нет deferred FF, нет циклов записи на s
 mkdir build && cd build
 cmake ..
 make
-make roundtrip
+make roundtrip      # 64-bit движок (14-битная модель, uint32_t слова)
+make roundtrip32    # 32-bit движок (12-битная модель, uint16_t слова)
 ```
 
 ## Использование
@@ -25,9 +26,16 @@ make roundtrip
 ./rc_decode <input_file.rc> <output_file>
 ```
 
+### 32-битный движок (RC_TOTAL_BITS=12, 16-битные слова)
+```
+./rc_encode32 <input_file> <output_file.rc32>
+./rc_decode32 <input_file.rc32> <output_file>
+```
+
 ### Тест roundtrip (все 6 датасетов)
 ```
-make roundtrip
+make roundtrip      # 64-битный движок
+make roundtrip32    # 32-битный движок
 ```
 
 ### Диагностика (статистика по веткам кодера, без записи)
@@ -105,11 +113,40 @@ roundtrip:   OK
 
 | Файл | Назначение |
 |---|---|
-| `rc_codec.h` | Inplace кодек (энкодер + декодер, always_inline). |
-| `model.h` | Статическая order-0 модель (14 бит, total=16384). |
+| `rc_codec.h` | Inplace кодек (энкодер + декодер, always_inline). 64-битный Schindler. |
+| `model.h` | Статическая order-0 модель (14 бит, total=16384). Для 64-битного движка. |
+| `rc_encode.c` | Кодер (64-битный движок). |
+| `rc_decode.c` | Декодер (64-битный движок, streaming output, чистый замер). |
+| `rc_codec_32.h` | 32-битный in-place carry range coder (16-битные слова, RC_TOTAL_BITS=12). |
+| `model_12.h` | Статическая order-0 модель (12 бит, total=4096). Для 32-битного движка. |
+| `rc_encode32.c` | Кодер 32-битного движка. |
+| `rc_decode32.c` | Декодер 32-битного движка. |
 | `timer.h` | Кроссплатформенный int64 таймер. |
 | `test_data.h` | Наборы данных: LOREM, CCODE, ENGLISH, RUSSIAN, REPEAT, RANDOM. |
-| `rc_encode.c` | Кодер. |
-| `rc_decode.c` | Декодер (streaming output, чистый замер). |
 | `gen_data.c` | Генератор тестовых данных. |
 | `rc_diag.c` | Диагностика веток кодера. |
+| `roundtrip.sh` | Roundtrip тесты для 64-битного движка. |
+| `roundtrip32.sh` | Roundtrip тесты для 32-битного движка. |
+
+## 32-битный движок (rc_codec_32.h)
+
+Альтернативный range coder, не зависящий от 64-битной арифметики. Проверен
+на 13+ датасетах (равномерные/скошенные бинарные, 16/256-символьные uniform,
+Zipf, AR(1), Laplace, реальный текст, /dev/urandom, periodic, edge cases).
+
+Принцип:
+- `r = range >> 12`, `low += r * cum_freq`, `range = r * freq`
+- Carry ripple: при переполнении 32-битного `low` инкрементируем уже
+  записанные 16-битные слова назад, пока перенос не погаснет.
+- Renorm: пока `range < 2^16` — выдвигаем старшее слово `low` в буфер.
+
+Запас точности range = `RC_TOP_BITS - RC_TOTAL_BITS = 4 бита`. Это даёт
+нижнюю границу overhead ~0.1–0.2% на подходящих данных. Точность 64-битного
+движка выше (14-битная модель + 50 бит range), но 32-битный движок переносится
+на платформы без 64-битных умножений (Xtensa, MIPS32, Cortex-M0).
+
+Формат `.rc32` идентичен `.rc` по структуре (524 байта заголовка + поток),
+но:
+- сигнатура `'r','3'` вместо `'r','c'`
+- поток состоит из `uint16_t` слов (а не `uint32_t`)
+- модель 12-битная (`TARGET_TOTAL_12 = 4096`) вместо 14-битной

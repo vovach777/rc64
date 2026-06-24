@@ -49,10 +49,28 @@ if(MATH_LIBRARY)
     target_link_libraries(rc_diag ${MATH_LIBRARY})
 endif()
 
+# --- 32-bit engine (RC_TOTAL_BITS=12, 16-bit words, 256-symbol alphabet) ---
+add_executable(rc_encode32 rc_encode32.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc_encode32 ${MATH_LIBRARY})
+endif()
+
+add_executable(rc_decode32 rc_decode32.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc_decode32 ${MATH_LIBRARY})
+endif()
+
 # --- Roundtrip test ---
 add_custom_target(roundtrip
     COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip.sh ${CMAKE_BINARY_DIR}
     DEPENDS rc_encode rc_decode gen_data
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running roundtrip tests on all datasets"
+    COMMENT "Running roundtrip tests on all datasets (64-bit engine)"
+)
+
+add_custom_target(roundtrip32
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip32.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc_encode32 rc_decode32 gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (32-bit engine, 12-bit total)"
 )
