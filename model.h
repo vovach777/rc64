@@ -8,6 +8,12 @@
  *
  * Кумулятивные частоты хранятся в uint16_t (14 бит хватает: 0..16384).
  *
+ * Поиск символа по cum-значению:
+ *   - По умолчанию: прямой LUT uint8_t[TARGET_TOTAL+1] (16385 байт).
+ *     O(1), одна cache line load. Идеально для декодера.
+ *   - Если определён DISABLE_LUT: 8-шаговый binary search без ветвлений
+ *     (старая реализация, 8 dependent loads из cums[257]).
+ *
  * МАСШТАБИРОВАНИЕ:
  *   raw_freq[i] * 16384 / total_raw -> scaled[i]
  *   Если raw_freq[i] > 0 но scaled[i] == 0: scaled[i] = 1 (вычесть из max).
@@ -33,6 +39,10 @@
    cum_lo(sym) = cum[sym], freq(sym) = cum[sym+1] - cum[sym].
    Всё в uint16_t — 14 бит достаточно. */
 typedef  uint16_t cums_t[ALPHABET + 1];
+
+/* LUT: lut[cum] -> символ s, наибольший с cum[s] <= cum.
+   Размер = TARGET_TOTAL + 1 = 16385 байт (~16 KB, влезает в L1). */
+typedef  uint8_t  lut_t[TARGET_TOTAL + 1];
 
 /* Построить модель по сырым частотам.
    raw_freq[256] — счётчики байтов.
@@ -96,6 +106,22 @@ static inline int model_build(cums_t m, const uint32_t raw_freq[ALPHABET]) {
 
 }
 
+/* Построить LUT по готовой кумулятивной таблице.
+   Вызывается один раз после model_build (если LUT не отключён).
+   Для RLE-модели LUT не нужен — он просто не будет использоваться. */
+static inline void model_build_lut(lut_t lut, const cums_t m) {
+#ifndef DISABLE_LUT
+    int s = 0;
+    unsigned v;
+    for (v = 0; v <= TARGET_TOTAL; v++) {
+        while (s < ALPHABET - 1 && (int)m[s + 1] <= (int)v) s++;
+        lut[v] = (uint8_t)s;
+    }
+#else
+    (void)lut; (void)m;  /* unused */
+#endif
+}
+
 /* Получить cum_lo и freq для символа sym. */
 static inline void model_get(const cums_t m, uint8_t sym,
                              uint16_t *cum_lo, uint16_t *freq) {
@@ -104,16 +130,21 @@ static inline void model_get(const cums_t m, uint8_t sym,
 }
 
 /* Найти символ по кумулятивному значению cum (для декодера).
-   Возвращает символ, записывает cum_lo и freq. */
-static inline uint8_t model_find(const cums_t m, uint16_t cum,
-                                  uint16_t *cum_lo, uint16_t *freq) {
+   Версия с LUT — O(1) прямое чтение. */
+static inline uint8_t model_find_lut(const lut_t lut, const cums_t m,
+                                     uint16_t cum,
+                                     uint16_t *cum_lo, uint16_t *freq) {
+    uint8_t s = lut[cum];
+    *cum_lo = m[s];
+    *freq   = (uint16_t)(m[s + 1] - m[s]);
+    return s;
+}
+
+/* Найти символ по кумулятивному значению cum (для декодера).
+   Версия без LUT — 8-шаговый binary search без ветвлений (cmov). */
+static inline uint8_t model_find_nolut(const cums_t m, uint16_t cum,
+                                       uint16_t *cum_lo, uint16_t *freq) {
     const uint16_t* base = m;
-    // Компилятор (GCC/Clang) превратит тернарные операторы в инструкции
-    // условной пересылки (MOVEQZ / MOVNEZ для Xtensa),
-    // полностью исключая ветвления!
-    /* 8 шагов (128..1) покрывают все 256 индексов: 128+64+32+16+8+4+2+1 = 255.
-       base сдвигается, пока cum >= cum[base+k]; итоговый base указывает на
-       cum[s], где s — наибольший индекс с cum[s] <= cum_value. */
     base += (cum >= base[128]) ? 128 : 0;
     base += (cum >= base[64]) ? 64 : 0;
     base += (cum >= base[32]) ? 32 : 0;
@@ -123,12 +154,25 @@ static inline uint8_t model_find(const cums_t m, uint16_t cum,
     base += (cum >= base[2]) ? 2 : 0;
     base += (cum >= base[1]) ? 1 : 0;
 
-    uint8_t s = base - m;
+    uint8_t s = (uint8_t)(base - m);
     *cum_lo = m[s];
     *freq  = (uint16_t)m[s + 1] - m[s];
+    return s;
+}
 
-    return (uint8_t)s;
-
+/* Универсальный model_find: выбирает реализацию по умолчанию.
+   Если доступен LUT (передан не-NULL) — используется он.
+   Иначе fallback на binary search. */
+static inline uint8_t model_find(const cums_t m, uint16_t cum,
+                                  uint16_t *cum_lo, uint16_t *freq) {
+#ifdef DISABLE_LUT
+    return model_find_nolut(m, cum, cum_lo, freq);
+#else
+    /* Этот вариант вызывается, если вызывающий код не передаёт LUT.
+       Делаем fallback на binary search — это медленнее, но совместимо
+       со старым API. Новый код должен использовать model_find_lut(). */
+    return model_find_nolut(m, cum, cum_lo, freq);
+#endif
 }
 
 #endif /* MODEL_H */

@@ -85,8 +85,8 @@ int main(int argc, char **argv) {
     memset(raw_freq, 0, sizeof(raw_freq));
     for (size_t i = 0; i < n; i++) raw_freq[data[i]]++;
 
-    cums12_t m;
-    int is_rle = model12_build(m, raw_freq);
+    model12_t M;
+    int is_rle = model12_build(&M, raw_freq);
     if (is_rle < 0) {
         fprintf(stderr, "model_build failed\n");
         free(data);
@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
 
     /* Сигнатура: 'r','3' (отличается от 'r','c' 64-битной версии) */
     uint8_t flags = !!is_rle;
-    uint8_t rle_sym = (uint8_t)m[1];
+    uint8_t rle_sym = (uint8_t)M.cums[1];
     uint8_t sig[4] = { 'r', '3', flags, rle_sym };
     if (!zpl_file_write(&fout, sig, sizeof(sig))) {
         fprintf(stderr, "write sig\n");
@@ -132,7 +132,7 @@ int main(int argc, char **argv) {
     }
 
     /* --- RC mode: запись cum[1..256] --- */
-    if (!zpl_file_write(&fout, m + 1, sizeof(m[0]) * ALPHABET_12)) {
+    if (!zpl_file_write(&fout, M.cums + 1, sizeof(M.cums[0]) * ALPHABET_12)) {
         fprintf(stderr, "write cum\n");
         zpl_file_close(&fout); free(data); return 1;
     }
@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
     /* --- Выделение буфера потока (16-битные слова) ---
        Верхняя оценка: 1 слово (16 бит) на 1 байт входа (худший случай
        для очень скошенных распределений) + запас на flush. */
-    size_t buf_words = (size_t)(n + 16);
+    size_t buf_words = (size_t)(n + n / 50 + 1024);
     uint16_t *buf = (uint16_t *)malloc(buf_words * sizeof(uint16_t));
     if (!buf) {
         fprintf(stderr, "malloc buf\n");
@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
         zpl_u64 t0 = zpl_rdtsc();
         for (size_t k = 0; k < block; k++) {
             uint16_t cum_lo, freq;
-            model12_get(m, data[i + k], &cum_lo, &freq);
+            model12_get(&M, data[i + k], &cum_lo, &freq);
             rc32_enc_step(&rc, cum_lo, freq);
         }
         total_ticks += zpl_rdtsc() - t0;

@@ -1,9 +1,13 @@
 #!/bin/sh
-# Roundtrip test for the 32-bit engine (RC_TOTAL_BITS=12, 16-bit words).
+# Roundtrip test for the 32-bit engine.
 # encode32 + decode32 + verify (cmp) on all 6 datasets.
-# Usage: roundtrip32.sh <build_dir>
+# Usage: roundtrip32.sh <build_dir> [enc_bin] [dec_bin]
+#   enc_bin default: rc_encode32
+#   dec_bin default: rc_decode32
 set -e
 BIN="${1:-.}"
+ENC="${2:-rc_encode32}"
+DEC="${3:-rc_decode32}"
 
 mkdir -p "$BIN/test32"
 
@@ -18,8 +22,8 @@ for ds in lorem ccode english russian repeat random; do
         random)  i=5;;
     esac
     "$BIN/gen_data" $i 200000 "$BIN/test32/$ds.orig"
-    "$BIN/rc_encode32" "$BIN/test32/$ds.orig" "$BIN/test32/$ds.rc32"
-    "$BIN/rc_decode32" "$BIN/test32/$ds.rc32" "$BIN/test32/$ds.dec"
+    "$BIN/$ENC" "$BIN/test32/$ds.orig" "$BIN/test32/$ds.rc32"
+    "$BIN/$DEC" "$BIN/test32/$ds.rc32" "$BIN/test32/$ds.dec"
     if cmp -s "$BIN/test32/$ds.orig" "$BIN/test32/$ds.dec"; then
         IN=$(wc -c < "$BIN/test32/$ds.orig")
         OUT=$(wc -c < "$BIN/test32/$ds.rc32")

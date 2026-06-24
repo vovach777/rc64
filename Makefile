@@ -1,6 +1,13 @@
 # Makefile for rc64 (fallback для окружений без cmake)
-# Сборка: make
-# Тесты:  make roundtrip   make roundtrip32
+# Сборка:
+#   make            — 64+32 bit движки с LUT (default)
+#   make nolut      — 64+32 bit движки БЕЗ LUT (DISABLE_LUT)
+#   make fp         — 32 bit + LUT + FP-деление (USE_FLOAT_DIV)
+#   make all5       — все 5 вариантов (для бенчмарка)
+# Тесты:
+#   make roundtrip   / make roundtrip32      (с LUT)
+#   make roundtrip_nl / make roundtrip32_nl  (без LUT)
+#   make roundtrip32_fp                      (с FP-делением)
 
 CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
@@ -8,12 +15,26 @@ CFLAGS  += -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
 LDFLAGS ?=
 LDLIBS  ?= -lm
 
+# Конфигурации по умолчанию (с LUT)
 BIN_64 = rc_encode rc_decode gen_data rc_diag
 BIN_32 = rc_encode32 rc_decode32
 
+# Варианты без LUT
+BIN_64_NL = rc_encode_nl rc_decode_nl
+BIN_32_NL = rc_encode32_nl rc_decode32_nl
+
+# Варианты с FP-делением (32-bit + LUT + double division)
+BIN_32_FP = rc_encode32_fp rc_decode32_fp
+
 all: $(BIN_64) $(BIN_32)
 
-# 64-битный движок
+nolut: $(BIN_64_NL) $(BIN_32_NL)
+
+fp: $(BIN_32_FP)
+
+all5: all nolut fp
+
+# === 64-битный движок (с LUT по умолчанию) ===
 rc_encode: rc_encode.c rc_codec.h model.h timer.h zpl.h test_data.h
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
@@ -26,24 +47,54 @@ rc_diag: rc_diag.c rc_codec.h model.h timer.h zpl.h test_data.h
 gen_data: gen_data.c test_data.h
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-# 32-битный движок
+# === 32-битный движок (с LUT по умолчанию) ===
 rc_encode32: rc_encode32.c rc_codec_32.h model_12.h zpl.h
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
 rc_decode32: rc_decode32.c rc_codec_32.h model_12.h zpl.h
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-# Тесты
+# === 64-битный движок БЕЗ LUT (DISABLE_LUT) ===
+rc_encode_nl: rc_encode.c rc_codec.h model.h timer.h zpl.h test_data.h
+	$(CC) $(CFLAGS) -DDISABLE_LUT $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+rc_decode_nl: rc_decode.c rc_codec.h model.h timer.h zpl.h test_data.h
+	$(CC) $(CFLAGS) -DDISABLE_LUT $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+# === 32-битный движок БЕЗ LUT (DISABLE_LUT) ===
+rc_encode32_nl: rc_encode32.c rc_codec_32.h model_12.h zpl.h
+	$(CC) $(CFLAGS) -DDISABLE_LUT $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+rc_decode32_nl: rc_decode32.c rc_codec_32.h model_12.h zpl.h
+	$(CC) $(CFLAGS) -DDISABLE_LUT $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+# === 32-битный движок с FP-делением (USE_FLOAT_DIV) ===
+rc_encode32_fp: rc_encode32.c rc_codec_32.h model_12.h zpl.h
+	$(CC) $(CFLAGS) -DUSE_FLOAT_DIV $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+rc_decode32_fp: rc_decode32.c rc_codec_32.h model_12.h zpl.h
+	$(CC) $(CFLAGS) -DUSE_FLOAT_DIV $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+# === Тесты ===
 roundtrip: $(BIN_64)
 	sh roundtrip.sh .
 
 roundtrip32: $(BIN_32) gen_data
 	sh roundtrip32.sh .
 
+roundtrip_nl: $(BIN_64_NL) gen_data
+	sh roundtrip.sh . rc_encode_nl rc_decode_nl
+
+roundtrip32_nl: $(BIN_32_NL) gen_data
+	sh roundtrip32.sh . rc_encode32_nl rc_decode32_nl
+
+roundtrip32_fp: $(BIN_32_FP) gen_data
+	sh roundtrip32.sh . rc_encode32_fp rc_decode32_fp
+
 test: roundtrip roundtrip32
 
 clean:
-	rm -f $(BIN_64) $(BIN_32)
-	rm -rf test test32
+	rm -f $(BIN_64) $(BIN_32) $(BIN_64_NL) $(BIN_32_NL) $(BIN_32_FP)
+	rm -rf test test32 bench
 
-.PHONY: all roundtrip roundtrip32 test clean
+.PHONY: all nolut fp all5 roundtrip roundtrip32 roundtrip_nl roundtrip32_nl roundtrip32_fp test clean

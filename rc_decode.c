@@ -81,6 +81,10 @@ int main(int argc, char **argv) {
     zpl_file_read(&fin, m + 1, sizeof(m[0]) * ALPHABET);
     zpl_i64 ac_data_len = (zpl_file_size(&fin) - 524);
 
+    /* LUT строится один раз по готовой таблице cums (если не DISABLE_LUT) */
+    lut_t lut;
+    model_build_lut(lut, m);
+
     zpl_u64 t0xx = zpl_time_rel_ms() + 100;
     zpl_u64 dddd = zpl_rdtsc();
     while (zpl_time_rel_ms() < t0xx);
@@ -127,7 +131,11 @@ int main(int argc, char **argv) {
         for (uint32_t n=0; n < block_size; ++n) {
             uint16_t cum = rc_dec_get_cum(&rd, TARGET_TOTAL);
             uint16_t cum_lo, freq;
-            uint8_t sym = model_find(m, cum, &cum_lo, &freq);
+#ifdef DISABLE_LUT
+            uint8_t sym = model_find_nolut(m, cum, &cum_lo, &freq);
+#else
+            uint8_t sym = model_find_lut(lut, m, cum, &cum_lo, &freq);
+#endif
             words_p += rc_dec_step(&rd, cum_lo, freq, TARGET_TOTAL, words_p);
             out_buf[n] = sym;
         }

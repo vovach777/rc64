@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
     }
 
     /* --- Выделение буфера потока --- */
-    size_t buf_words = (size_t)(n / 4 + 256);
+    size_t buf_words = (size_t)(n / 4 + n / 200 + 1024);
     uint32_t *buf = (uint32_t *)malloc(buf_words * sizeof(uint32_t));
     if (!buf) {
         fprintf(stderr, "malloc buf\n");

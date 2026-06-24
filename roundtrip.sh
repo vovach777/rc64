@@ -1,8 +1,12 @@
 #!/bin/sh
 # Roundtrip test: encode + decode + verify (cmp) on all 6 datasets
-# Usage: roundtrip.sh <build_dir>
+# Usage: roundtrip.sh <build_dir> [enc_bin] [dec_bin]
+#   enc_bin default: rc_encode
+#   dec_bin default: rc_decode
 set -e
 BIN="${1:-.}"
+ENC="${2:-rc_encode}"
+DEC="${3:-rc_decode}"
 
 mkdir -p "$BIN/test"
 
@@ -17,8 +21,8 @@ for ds in lorem ccode english russian repeat random; do
         random)  i=5;;
     esac
     "$BIN/gen_data" $i 200000 "$BIN/test/$ds.orig"
-    "$BIN/rc_encode" "$BIN/test/$ds.orig" "$BIN/test/$ds.rc"
-    "$BIN/rc_decode" "$BIN/test/$ds.rc" "$BIN/test/$ds.dec"
+    "$BIN/$ENC" "$BIN/test/$ds.orig" "$BIN/test/$ds.rc"
+    "$BIN/$DEC" "$BIN/test/$ds.rc" "$BIN/test/$ds.dec"
     if cmp -s "$BIN/test/$ds.orig" "$BIN/test/$ds.dec"; then
         echo "  ROUNDTRIP OK: $(wc -c < "$BIN/test/$ds.orig") bytes"
     else

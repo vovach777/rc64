@@ -88,12 +88,25 @@ int main(int argc, char **argv) {
     }
 
     /* RC mode: чтение кумулятивных частот cum[1..256] */
-    cums12_t m = {0};
-    if (zpl_file_read(&fin, m + 1, sizeof(m[0]) * ALPHABET_12) != 1) {
+    model12_t M;
+    memset(&M, 0, sizeof(M));
+    if (zpl_file_read(&fin, M.cums + 1, sizeof(M.cums[0]) * ALPHABET_12) != 1) {
         fprintf(stderr, "read cum\n");
         zpl_file_close(&fin);
         return 1;
     }
+
+    /* LUT строится один раз по готовой таблице cums (если не DISABLE_LUT) */
+#ifndef DISABLE_LUT
+    {
+        int s = 0;
+        unsigned v;
+        for (v = 0; v <= TARGET_TOTAL_12; v++) {
+            while (s < ALPHABET_12 - 1 && (int)M.cums[s + 1] <= (int)v) s++;
+            M.lut[v] = (uint8_t)s;
+        }
+    }
+#endif
 
     zpl_i64 ac_data_len = zpl_file_size(&fin) - 524;  /* 4+8+512 */
 
@@ -147,7 +160,7 @@ int main(int argc, char **argv) {
         for (uint32_t k = 0; k < block_size; k++) {
             uint16_t cum = (uint16_t)rc32_dec_get_cum(&rd);
             uint16_t cum_lo, freq;
-            uint8_t sym = model12_find(m, cum, &cum_lo, &freq);
+            uint8_t sym = model12_find(&M, cum, &cum_lo, &freq);
             rc32_dec_step(&rd, cum_lo, freq);
             out_buf[k] = sym;
         }

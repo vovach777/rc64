@@ -144,9 +144,27 @@ static inline void rc32_dec_init(rc32_dec_t *d, const uint16_t *in, size_t len) 
    Нужно вызывающему коду для диагностики. */
 static inline size_t rc32_dec_pos(const rc32_dec_t *d) { return d->pos; }
 
+/* Вычислить v = code / r (floor-деление).
+   По умолчанию — целочисленное divl (~23 cycles на Skylake).
+   При определении USE_FLOAT_DIV — через double (~13 cycles):
+       v = (uint32_t)((double)code / (double)r)
+   FP-деление правильно округляет к ближайшему, поэтому результат может
+   оказаться на 1 больше истинного floor. Корректируем одной
+   imull+cmp+sbb (~3 cycles), и в сумме получаем ~16 cycles вместо 23.
+
+   Безопасность: code ≤ 0xFFFFFFFF и r ≥ 16 точно представимы в double
+   (53-битная мантисса), как и их отношение (≤ 2^28). */
 static inline uint32_t rc32_dec_get_cum(const rc32_dec_t *d) {
     uint32_t r = d->range >> RC32_TOTAL_BITS;
-    uint32_t v = d->code / r;                 /* единственное деление */
+#ifdef USE_FLOAT_DIV
+    /* FP-деление + коррекция off-by-one-high. */
+    uint32_t v = (uint32_t)((double)d->code / (double)r);
+    /* Если FP округлил вверх (v * r > code), уменьшаем на 1.
+       Безветвочно: вычитаем флаг (v*r > code) через sbb. */
+    v -= (uint32_t)((uint64_t)v * r > d->code);
+#else
+    uint32_t v = d->code / r;             /* целочисленное divl */
+#endif
     /* clamp на случай попадания в «мёртвую зону» хвоста range */
     return (v >= RC32_TOTAL) ? (RC32_TOTAL - 1u) : v;
 }
