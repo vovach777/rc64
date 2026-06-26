@@ -164,14 +164,10 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Выделение renorm-буфера под ОДИН блок (переиспользуется).
-       Размер = доказанный потолок renorm-слов на блок (см. RENORM_BUF_WORDS). --- */
-    size_t buf_words = (size_t)RENORM_BUF_WORDS;
-    uint32_t *buf = (uint32_t *)malloc(buf_words * sizeof(uint32_t));
-    if (!buf) {
-        fprintf(stderr, "malloc buf\n");
-        zpl_file_close(&fout); free(data); return 1;
-    }
+    /* --- renorm-буфер под ОДИН блок (переиспользуется). Размер фиксирован —
+       доказанный потолок renorm-слов на блок (см. RENORM_BUF_WORDS), поэтому
+       static: без malloc/free, живёт в BSS. --- */
+    static uint32_t buf[RENORM_BUF_WORDS];
 
     /* --- Кодирование: проход по блокам ПРЯМОЙ, внутри блока — НАЗАД (LIFO).
        Замер: только цикл Rans64EncPut, без I/O и без переворота. --- */
@@ -193,7 +189,7 @@ int main(int argc, char **argv) {
            первой), и отдельный переворот не нужен. Запас (+n/50+1024) при
            этом остаётся СПЕРЕДИ, нетронутым; для текста тронутый хвост буфера
            мал и укладывается в L2. */
-        size_t buf_head = buf_words;
+        size_t buf_head = RENORM_BUF_WORDS;
 
         zpl_u64 t0 = zpl_rdtsc();
         for (size_t k = 0, pos = a_hi; k < block_syms; k++) {
@@ -204,7 +200,7 @@ int main(int argc, char **argv) {
             if (res) {
                 if (buf_head == 0) {
                     fprintf(stderr, "renorm buffer overflow\n");
-                    free(buf); zpl_file_close(&fout); free(data); return 1;
+                    zpl_file_close(&fout); free(data); return 1;
                 }
                 buf[--buf_head] = *res;
             }
@@ -215,7 +211,7 @@ int main(int argc, char **argv) {
         uint32_t flush_hi = (uint32_t)flush_pair.first;   /* HIGH32 state */
         uint32_t flush_lo = (uint32_t)flush_pair.second;  /* LOW32  state */
 
-        size_t renorm_count = buf_words - buf_head;
+        size_t renorm_count = (size_t)RENORM_BUF_WORDS - buf_head;
 
         /* Заголовок блока: [renorm_count][flush_lo][flush_hi].
            flush в паре (LOW, HIGH) — декодер Init({flush_lo, flush_hi})
@@ -224,12 +220,12 @@ int main(int argc, char **argv) {
         uint32_t blk_hdr[3] = { (uint32_t)renorm_count, flush_lo, flush_hi };
         if (!zpl_file_write(&fout, blk_hdr, sizeof(blk_hdr))) {
             fprintf(stderr, "write block hdr\n");
-            free(buf); zpl_file_close(&fout); free(data); return 1;
+            zpl_file_close(&fout); free(data); return 1;
         }
         if (renorm_count > 0) {
             if (!zpl_file_write(&fout, buf + buf_head, sizeof(buf[0]) * renorm_count)) {
                 fprintf(stderr, "write renorm\n");
-                free(buf); zpl_file_close(&fout); free(data); return 1;
+                zpl_file_close(&fout); free(data); return 1;
             }
         }
 
@@ -244,7 +240,6 @@ int main(int argc, char **argv) {
 
     zpl_i64 out_bytes = zpl_file_size(&fout);
     zpl_file_close(&fout);
-    free(buf);
     free(data);
 
     /* --- Отчёт --- */

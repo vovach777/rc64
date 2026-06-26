@@ -129,20 +129,15 @@ int main(int argc, char **argv) {
     zpl_u64 zpl_rdtsc_freq = (zpl_rdtsc() - dddd) * 10;
     printf("CPU freq = %1.1f Mhz\n", zpl_rdtsc_freq / 1000000.0f);
 
-    /* renorm-буфер под ОДИН блок (один на все блоки). */
-    size_t buf_words = (size_t)RENORM_BUF_WORDS;
-    uint32_t *buf = (uint32_t *)malloc(buf_words * sizeof(uint32_t));
-    if (!buf) {
-        fprintf(stderr, "malloc buf\n");
-        zpl_file_close(&fin);
-        return 1;
-    }
+    /* renorm-буфер под ОДИН блок (один на все блоки). Размер фиксирован —
+       статический, без malloc/free (живёт в BSS). */
+    static uint32_t buf[RENORM_BUF_WORDS];
+    const size_t buf_words = RENORM_BUF_WORDS;
 
     /* Выходной файл — отдельный дескриптор (входной fin дочитываем на лету). */
     zpl_file fout;
     if (zpl_file_create(&fout, argv[2])) {
         perror("fopen output");
-        free(buf);
         zpl_file_close(&fin);
         return 1;
     }
@@ -157,7 +152,7 @@ int main(int argc, char **argv) {
         uint32_t blk_hdr[3];
         if (!zpl_file_read(&fin, blk_hdr, sizeof(blk_hdr))) {
             fprintf(stderr, "read block hdr\n");
-            zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+            zpl_file_close(&fout); zpl_file_close(&fin); return 1;
         }
         uint32_t renorm_count = blk_hdr[0];
         uint32_t flush_lo     = blk_hdr[1];
@@ -166,14 +161,14 @@ int main(int argc, char **argv) {
         if (renorm_count > buf_words) {
             fprintf(stderr, "block renorm overflow (%u > %zu)\n",
                     renorm_count, buf_words);
-            zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+            zpl_file_close(&fout); zpl_file_close(&fin); return 1;
         }
 
         /* renorm-слова блока — читаем ВПЕРЁД (энкодер перевернул). */
         if (renorm_count > 0) {
             if (!zpl_file_read(&fin, buf, sizeof(buf[0]) * renorm_count)) {
                 fprintf(stderr, "read block renorm\n");
-                zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+                zpl_file_close(&fout); zpl_file_close(&fin); return 1;
             }
         }
 
@@ -199,7 +194,7 @@ int main(int argc, char **argv) {
                 if (consumed) {
                     if (rp >= renorm_count) {
                         fprintf(stderr, "renorm underflow\n");
-                        zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+                        zpl_file_close(&fout); zpl_file_close(&fin); return 1;
                     }
                     rp++;
                 }
@@ -208,7 +203,7 @@ int main(int argc, char **argv) {
             total_ticks += zpl_rdtsc() - t0;
             if (!zpl_file_write(&fout, out_buf, out_block)) {
                 perror("fwrite error");
-                zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+                zpl_file_close(&fout); zpl_file_close(&fin); return 1;
             }
             block_done += out_block;
         }
@@ -230,7 +225,6 @@ int main(int argc, char **argv) {
 
     zpl_file_close(&fin);
     zpl_file_close(&fout);
-    free(buf);
 
     printf("DECODE-RANS OK\n");
     printf("  engine:   64-bit rANS, 32-bit renorm, scale_bits=%u\n", RANS_SCALE_BITS);
