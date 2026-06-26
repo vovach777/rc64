@@ -10,14 +10,17 @@
 #   make roundtrip32_fp                      (с FP-делением)
 
 CC      ?= gcc
+CXX     ?= g++
 CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 CFLAGS  += -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE
+CXXFLAGS ?= -O2 -Wall -Wextra -std=c++17
 LDFLAGS ?=
 LDLIBS  ?= -lm
 
 # Конфигурации по умолчанию (с LUT)
 BIN_64 = rc_encode rc_decode gen_data rc_diag
 BIN_32 = rc_encode32 rc_decode32
+BIN_RANS = rans_encode rans_decode
 
 # Варианты без LUT
 BIN_64_NL = rc_encode_nl rc_decode_nl
@@ -26,7 +29,7 @@ BIN_32_NL = rc_encode32_nl rc_decode32_nl
 # Варианты с FP-делением (32-bit + LUT + double division)
 BIN_32_FP = rc_encode32_fp rc_decode32_fp
 
-all: $(BIN_64) $(BIN_32)
+all: $(BIN_64) $(BIN_32) $(BIN_RANS)
 
 nolut: $(BIN_64_NL) $(BIN_32_NL)
 
@@ -53,6 +56,13 @@ rc_encode32: rc_encode32.c rc_codec_32.h model_12.h zpl.h
 
 rc_decode32: rc_decode32.c rc_codec_32.h model_12.h zpl.h
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+# === rANS движок (64-bit state, 32-bit renorm, C++) ===
+rans_encode: rans_encode.cpp rans_codec.h model.h zpl.h
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+rans_decode: rans_decode.cpp rans_codec.h model.h zpl.h
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
 # === 64-битный движок БЕЗ LUT (DISABLE_LUT) ===
 rc_encode_nl: rc_encode.c rc_codec.h model.h timer.h zpl.h test_data.h
@@ -82,6 +92,9 @@ roundtrip: $(BIN_64)
 roundtrip32: $(BIN_32) gen_data
 	sh roundtrip32.sh .
 
+roundtrip_rans: $(BIN_RANS) gen_data
+	sh roundtrip_rans.sh .
+
 roundtrip_nl: $(BIN_64_NL) gen_data
 	sh roundtrip.sh . rc_encode_nl rc_decode_nl
 
@@ -91,10 +104,10 @@ roundtrip32_nl: $(BIN_32_NL) gen_data
 roundtrip32_fp: $(BIN_32_FP) gen_data
 	sh roundtrip32.sh . rc_encode32_fp rc_decode32_fp
 
-test: roundtrip roundtrip32
+test: roundtrip roundtrip32 roundtrip_rans
 
 clean:
-	rm -f $(BIN_64) $(BIN_32) $(BIN_64_NL) $(BIN_32_NL) $(BIN_32_FP)
-	rm -rf test test32 bench
+	rm -f $(BIN_64) $(BIN_32) $(BIN_RANS) $(BIN_64_NL) $(BIN_32_NL) $(BIN_32_FP)
+	rm -rf test test32 testrans bench
 
-.PHONY: all nolut fp all5 roundtrip roundtrip32 roundtrip_nl roundtrip32_nl roundtrip32_fp test clean
+.PHONY: all nolut fp all5 roundtrip roundtrip32 roundtrip_rans roundtrip_nl roundtrip32_nl roundtrip32_fp test clean

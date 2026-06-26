@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.10)
-project(rc64 VERSION 2.0.0 LANGUAGES C)
+project(rc64 VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 #set(CMAKE_C_STANDARD_REQUIRED ON)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Release flags by default
 if(NOT CMAKE_BUILD_TYPE)
@@ -60,6 +63,17 @@ if(MATH_LIBRARY)
     target_link_libraries(rc_decode32 ${MATH_LIBRARY})
 endif()
 
+# --- rANS engine (64-bit state, 32-bit renorm, 14-bit static model) ---
+add_executable(rans_encode rans_encode.cpp)
+if(MATH_LIBRARY)
+    target_link_libraries(rans_encode ${MATH_LIBRARY})
+endif()
+
+add_executable(rans_decode rans_decode.cpp)
+if(MATH_LIBRARY)
+    target_link_libraries(rans_decode ${MATH_LIBRARY})
+endif()
+
 # --- Roundtrip test ---
 add_custom_target(roundtrip
     COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip.sh ${CMAKE_BINARY_DIR}
@@ -73,4 +87,11 @@ add_custom_target(roundtrip32
     DEPENDS rc_encode32 rc_decode32 gen_data
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running roundtrip tests on all datasets (32-bit engine, 12-bit total)"
+)
+
+add_custom_target(roundtrip_rans
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip_rans.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rans_encode rans_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (rANS engine)"
 )
