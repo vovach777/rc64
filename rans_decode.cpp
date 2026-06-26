@@ -2,7 +2,9 @@
  * RANS DECODE — 64-bit rANS, 14-битная статическая модель
  * =========================================================================
  *
- * Сжатый поток целиком грузится в память. Вывод через статический буфер 16KB.
+ * Декодер читает поток ПОСЛЕДОВАТЕЛЬНО, блок за блоком. Под весь поток память
+ * не выделяется — нужен только renorm-буфер под один блок (~1 МБ) и выходной
+ * буфер 16 КБ. renorm внутри блока читается ВПЕРЁД (энкодер перевернул буфер).
  *
  * Usage:
  *   rans_decode <input_file.rans> <output_file>
@@ -11,13 +13,20 @@
  *   [4]    sig 'r','n', flags, rle_sym
  *   [8]    uint64_t original_len (LE)
  *   [512]  cum[1..256] uint16_t LE
- *   [4*K]  renorm uint32_t words LE (порядок эмиссии энкодера)
- *   [8]    flush pair: HIGH32, LOW32 (LE)
+ *   далее подряд блоки:
+ *     [4]    uint32_t renorm_count (LE)
+ *     [4]    uint32_t flush_lo  = LOW32  state блока (LE)
+ *     [4]    uint32_t flush_hi  = HIGH32 state блока (LE)
+ *     [4*K]  renorm uint32_t LE — В ПОРЯДКЕ ПОТРЕБЛЕНИЯ (читаем ВПЕРЁД)
+ *
+ * Размер блока по ВХОДУ фиксирован (BLOCK_BYTES), поэтому число символов блока
+ * декодер знает сам: min(BLOCK_BYTES, orig_len − уже_декодировано). sym_count
+ * в потоке не хранится.
  *
  * Декодер:
- *   - читает flush-пару с конца потока, Init (с обменом first/second),
- *   - renorm-слова потребляет в обратном порядке (с конца буфера),
- *   - идёт по выходу ВПЕРЁД (симметрично обратному обходу энкодера).
+ *   - читает заголовок блока [renorm_count][flush_lo][flush_hi] и renorm-слова,
+ *   - Init({flush_lo, flush_hi}) (с обменом, как и раньше) → исходный state,
+ *   - ест renorm ВПЕРЁД (ptr++), идёт по выходу ВПЕРЁД.
  * ========================================================================= */
 
 #include <cstdio>
@@ -34,6 +43,7 @@
 #include "model.h"
 
 #define RANS_SCALE_BITS  14u
+#define BLOCK_BYTES      (256 * 1024)   /* фикс. размер блока ВХОДА (как у энкодера) */
 #define OUT_BUF_SIZE     (16 * 1024)
 
 int main(int argc, char **argv) {
@@ -49,7 +59,7 @@ int main(int argc, char **argv) {
 
     /* --- Заголовок --- */
     uint8_t sig[4];
-    if (zpl_file_read(&fin, sig, sizeof(sig)) != 1) {
+    if (!zpl_file_read(&fin, sig, sizeof(sig))) {
         fprintf(stderr, "read sig\n");
         zpl_file_close(&fin);
         return 1;
@@ -64,7 +74,7 @@ int main(int argc, char **argv) {
     uint8_t rle_sym = sig[3];
 
     uint64_t orig_len = 0;
-    if (zpl_file_read(&fin, &orig_len, sizeof(orig_len)) != 1) {
+    if (!zpl_file_read(&fin, &orig_len, sizeof(orig_len))) {
         fprintf(stderr, "read len\n");
         zpl_file_close(&fin);
         return 1;
@@ -72,34 +82,36 @@ int main(int argc, char **argv) {
     size_t n = (size_t)orig_len;
     if (n == 0) {
         zpl_file_close(&fin);
-        zpl_file_create(&fin, argv[2]);
-        zpl_file_close(&fin);
+        zpl_file fout;
+        zpl_file_create(&fout, argv[2]);
+        zpl_file_close(&fout);
         return 0;
     }
 
     /* --- RLE mode --- */
     if (is_rle) {
         zpl_file_close(&fin);
-        if (zpl_file_create(&fin, argv[2])) { perror("fopen output"); return 1; }
+        zpl_file fout;
+        if (zpl_file_create(&fout, argv[2])) { perror("fopen output"); return 1; }
         memset(out_buf, rle_sym, OUT_BUF_SIZE);
         size_t remaining = n;
         while (remaining > 0) {
             size_t block = (remaining < OUT_BUF_SIZE) ? remaining : OUT_BUF_SIZE;
-            if (!zpl_file_write(&fin, out_buf, block)) {
+            if (!zpl_file_write(&fout, out_buf, block)) {
                 perror("fwrite error");
-                zpl_file_close(&fin);
+                zpl_file_close(&fout);
                 return 1;
             }
             remaining -= block;
         }
-        zpl_file_close(&fin);
+        zpl_file_close(&fout);
         printf("DECODE-RANS OK (RLE Mode, sym=0x%02X, len=%zu)\n", rle_sym, n);
         return 0;
     }
 
     /* --- rANS mode: чтение cum[1..256] --- */
     cums_t m = {0};
-    if (zpl_file_read(&fin, m + 1, sizeof(m[0]) * ALPHABET) != 1) {
+    if (!zpl_file_read(&fin, m + 1, sizeof(m[0]) * ALPHABET)) {
         fprintf(stderr, "read cum\n");
         zpl_file_close(&fin);
         return 1;
@@ -108,15 +120,6 @@ int main(int argc, char **argv) {
     lut_t lut;
     model_build_lut(lut, m);
 
-    /* Размер потока = файл - заголовок 524.
-       В потоке: renorm-слова (4*K байт) + flush-пара (8 байт). */
-    zpl_i64 ac_data_len = zpl_file_size(&fin) - 524;
-    if (ac_data_len < 8) {
-        fprintf(stderr, "stream too short: %lld bytes\n", (long long)ac_data_len);
-        zpl_file_close(&fin);
-        return 1;
-    }
-
     /* Калибровка CPU */
     zpl_u64 t0xx = zpl_time_rel_ms() + 100;
     zpl_u64 dddd = zpl_rdtsc();
@@ -124,84 +127,91 @@ int main(int argc, char **argv) {
     zpl_u64 zpl_rdtsc_freq = (zpl_rdtsc() - dddd) * 10;
     printf("CPU freq = %1.1f Mhz\n", zpl_rdtsc_freq / 1000000.0f);
 
-    /* Чтение всего потока в память */
-    size_t stream_u8_len = (size_t)ac_data_len;
-    size_t stream_u32_len = stream_u8_len / sizeof(uint32_t) + 2;  /* + запас */
-    uint32_t *words = (uint32_t *)malloc(stream_u32_len * sizeof(uint32_t));
-    if (!words) {
-        fprintf(stderr, "malloc words\n");
+    /* renorm-буфер под ОДИН блок (один на все блоки). */
+    size_t buf_words = (size_t)(BLOCK_BYTES + BLOCK_BYTES / 50 + 1024);
+    uint32_t *buf = (uint32_t *)malloc(buf_words * sizeof(uint32_t));
+    if (!buf) {
+        fprintf(stderr, "malloc buf\n");
         zpl_file_close(&fin);
         return 1;
     }
 
-    {
-        uint8_t *u8_p = (uint8_t *)words;
-        int64_t u8_len = (int64_t)stream_u8_len;
-        while (u8_len > 0) {
-            uint32_t chunk = (uint32_t)zpl_min(u8_len, 0x1000000LL);
-            if (zpl_file_read(&fin, u8_p, chunk) != 1) {
-                fprintf(stderr, "read error\n");
-                zpl_file_close(&fin);
-                free(words);
-                return 1;
-            }
-            u8_p += chunk;
-            u8_len -= chunk;
-        }
-    }
-    zpl_file_close(&fin);
-
-    /* Поток: [renorm_0 .. renorm_{K-1}] [flush_high] [flush_low]
-       K = (stream_u8_len - 8) / 4 */
-    size_t renorm_count = (stream_u8_len - 8) / sizeof(uint32_t);
-    uint32_t flush_hi = words[renorm_count + 0];
-    uint32_t flush_lo = words[renorm_count + 1];
-
-    /* Init({a, b}) строит state = (b<<32) | a.
-       flush вернул (HIGH, LOW) — нужно передать ({LOW, HIGH}), чтобы получить
-       исходный state = (HIGH<<32) | LOW. Поэтому меняем местами. */
-    rANS::Decoder dec;
-    dec.Init({flush_lo, flush_hi});
-
-    if (zpl_file_create(&fin, argv[2])) {
+    /* Выходной файл — отдельный дескриптор (входной fin дочитываем на лету). */
+    zpl_file fout;
+    if (zpl_file_create(&fout, argv[2])) {
         perror("fopen output");
-        free(words);
+        free(buf);
+        zpl_file_close(&fin);
         return 1;
     }
 
-    /* Указатель renorm: идём с конца буфера НАЗАД.
-       ptr указывает на СЛЕДУЮЩЕЕ слово для потребления (после декремента —
-       текущее потреблённое). Начинаем с renorm_count-1 (последнее слово). */
     zpl_u64 total_ticks = 0;
-    size_t i = 0;
-    while (i != n) {
-        size_t block_size = zpl_min(n - i, (size_t)OUT_BUF_SIZE);
-        zpl_u64 t0 = zpl_rdtsc();
-        for (size_t k = 0; k < block_size; k++) {
-            uint32_t cum = dec.Rans64DecGet(RANS_SCALE_BITS);
-            uint16_t cum_lo, freq;
-            uint8_t sym = model_find_lut(lut, m, (uint16_t)cum, &cum_lo, &freq);
+    size_t i = 0;   /* выдано байт */
 
-            /* next — следующее слово для renorm, если потребуется.
-               Если буфер исчерпан (ptr == SIZE_MAX), передаём 0 — для
-               валидного потока renorm в этот момент не trigger'нет. */
-            uint32_t next = (renorm_count > 0) ? words[renorm_count - 1] : 0u;
-            bool consumed = dec.Rans64Dec(cum_lo, freq, RANS_SCALE_BITS, next);
-            if (consumed) {
-                if (renorm_count == 0) {
-                    fprintf(stderr, "renorm underflow\n");
-                    zpl_file_close(&fin); free(words); return 1;
-                }
-                renorm_count--;
+    while (i < n) {
+        size_t block_syms = zpl_min(n - i, (size_t)BLOCK_BYTES);
+
+        /* Заголовок блока: [renorm_count][flush_lo][flush_hi]. */
+        uint32_t blk_hdr[3];
+        if (!zpl_file_read(&fin, blk_hdr, sizeof(blk_hdr))) {
+            fprintf(stderr, "read block hdr\n");
+            zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+        }
+        uint32_t renorm_count = blk_hdr[0];
+        uint32_t flush_lo     = blk_hdr[1];
+        uint32_t flush_hi     = blk_hdr[2];
+
+        if (renorm_count > buf_words) {
+            fprintf(stderr, "block renorm overflow (%u > %zu)\n",
+                    renorm_count, buf_words);
+            zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+        }
+
+        /* renorm-слова блока — читаем ВПЕРЁД (энкодер перевернул). */
+        if (renorm_count > 0) {
+            if (!zpl_file_read(&fin, buf, sizeof(buf[0]) * renorm_count)) {
+                fprintf(stderr, "read block renorm\n");
+                zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
             }
-            out_buf[k] = sym;
         }
-        total_ticks += zpl_rdtsc() - t0;
-        if (!zpl_file_write(&fin, out_buf, block_size)) {
-            perror("fwrite error");
-            zpl_file_close(&fin); free(words); return 1;
+
+        /* Init({flush_lo, flush_hi}) строит state = flush_lo | (flush_hi<<32)
+           = (HIGH<<32) | LOW = исходный финальный state блока. */
+        rANS::Decoder dec;
+        dec.Init({flush_lo, flush_hi});
+
+        /* Декодируем block_syms символов, потребляя renorm ВПЕРЁД (rp++). */
+        size_t rp = 0;
+        size_t block_done = 0;
+        while (block_done < block_syms) {
+            size_t out_block = zpl_min(block_syms - block_done, (size_t)OUT_BUF_SIZE);
+            zpl_u64 t0 = zpl_rdtsc();
+            for (size_t k = 0; k < out_block; k++) {
+                uint32_t cum = dec.Rans64DecGet(RANS_SCALE_BITS);
+                uint16_t cum_lo, freq;
+                uint8_t sym = model_find_lut(lut, m, (uint16_t)cum, &cum_lo, &freq);
+
+                /* next — следующее слово для renorm, если потребуется. */
+                uint32_t next = (rp < renorm_count) ? buf[rp] : 0u;
+                bool consumed = dec.Rans64Dec(cum_lo, freq, RANS_SCALE_BITS, next);
+                if (consumed) {
+                    if (rp >= renorm_count) {
+                        fprintf(stderr, "renorm underflow\n");
+                        zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+                    }
+                    rp++;
+                }
+                out_buf[k] = sym;
+            }
+            total_ticks += zpl_rdtsc() - t0;
+            if (!zpl_file_write(&fout, out_buf, out_block)) {
+                perror("fwrite error");
+                zpl_file_close(&fout); zpl_file_close(&fin); free(buf); return 1;
+            }
+            block_done += out_block;
         }
-        i += block_size;
+
+        i += block_syms;
         printf("\r                      \r%zu / %zu  (%3.1f%%)",
                i, n, 100.0 * (double)i / (double)n);
         fflush(stdout);
@@ -217,13 +227,14 @@ int main(int argc, char **argv) {
         : 0.0;
 
     zpl_file_close(&fin);
-    free(words);
+    zpl_file_close(&fout);
+    free(buf);
 
     printf("DECODE-RANS OK\n");
     printf("  engine:   64-bit rANS, 32-bit renorm, scale_bits=%u\n", RANS_SCALE_BITS);
     printf("  decode:   %" PRIu64 " ms  (%.1f MB/s)\n", total_dec_time_ms, mb_s);
     printf("          : %u ticks per symbol\n", ticks_per_symbol);
-    printf("  memory:   %.2f MB\n",
-           (float)stream_u32_len / (1024.0f * 1024.0f / 4));
+    printf("  memory:   %.2f MB (block buffer only)\n",
+           (float)buf_words / (1024.0f * 1024.0f / 4));
     return 0;
 }

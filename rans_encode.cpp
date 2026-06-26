@@ -7,7 +7,7 @@
  * Usage:
  *   rans_encode <input_file> <output_file.rans>
  *
- * Формат .rans (структура аналогична .rc / .rc32):
+ * Формат .rans:
  *   [4 байта]  сигнатура: 'r','n', flags, rle_sym
  *              flags bit 0: is_rle
  *   [8 байт]   uint64_t original_len (LE)
@@ -16,14 +16,28 @@
  *   --- rANS mode (is_rle=0) ---
  *   [512 байт] cum[1..256] — uint16_t LE (кумулятивные частоты, 14-бит)
  *              cum[0]=0 не хранится (всегда константа)
- *   [4*K байт] uint32_t words LE — renorm-слова энкодера (в порядке эмиссии)
- *   [8 байт]   flush pair: uint32_t (HIGH32 state), uint32_t (LOW32 state) LE
+ *   далее подряд блоки (фиксированный размер ВХОДА BLOCK_BYTES):
+ *     [4 байта]  uint32_t renorm_count — число renorm-слов блока (LE)
+ *     [4 байта]  uint32_t flush_lo  = LOW32  финального state блока (LE)
+ *     [4 байта]  uint32_t flush_hi  = HIGH32 финального state блока (LE)
+ *     [4*K]      uint32_t renorm-слова блока, ПЕРЕВЁРНУТЫЕ (в порядке потребления
+ *                декодером) — декодер читает их ВПЕРЁД
  *
  * Заголовок: 4 + 8 + 512 = 524 байта (как у .rc / .rc32).
  *
- * rANS — LIFO: энкодер идёт по входу НАЗАД, чтобы декодер шёл ВПЕРЁД и
- * получал символы в исходном порядке. Каждое renorm-слово пишется в буфер
- * в порядке эмиссии; flush-пара дописывается в конец.
+ * Блочная схема (облегчаем декодер — весь реверс на энкодере):
+ *   - Каждый блок = НЕЗАВИСИМЫЙ rANS: свой state = RANS64_L в начале, своя
+ *     flush-пара в конце. Между блоками состояние не переносится.
+ *   - Проход по блокам ПРЯМОЙ (блок 0 = начало входа, блок 1 = следующий срез,
+ *     ...). Внутри блока обход ВХОДА НАЗАД (rANS LIFO): с a_hi-1 вниз до a_lo.
+ *   - renorm-слова блока пишутся в буфер С КОНЦА назад (buf[--buf_head]) —
+ *     тогда они сразу в порядке потребления декодером (последняя эмиссия
+ *     первой), отдельный переворот буфера не нужен. Запас (+n/50+1024) при
+ *     этом остаётся СПЕРЕДИ нетронутым и гарантирует, что buf_head не уйдёт
+ *     в минус; для текста тронутый хвост буфера мал и укладывается в L2.
+ *   - Размер блока по ВХОДУ фиксирован (BLOCK_BYTES), поэтому границы известны
+ *     заранее — ОДИН проход, без pre-pass и без seek. На огромных файлах
+ *     экономим память: буфер ~1 МБ вместо ~N.
  * ========================================================================= */
 
 #include <cstdio>
@@ -40,7 +54,7 @@
 #include "model.h"
 
 #define RANS_SCALE_BITS  14u   /* совпадает с TARGET_TOTAL = 2^14 из model.h */
-#define PROGRESS_BLOCK   (16 * 1024)
+#define BLOCK_BYTES      (256 * 1024)   /* фиксированный размер блока ВХОДА */
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -143,66 +157,84 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Выделение буфера renorm-слов ---
-       Каждый символ кодирует в 0..1 renorm-слово, плюс flush-пара в конце.
-       Верхняя оценка: N слов + запас. */
-    size_t buf_words = (size_t)(n + n / 50 + 1024);
+    /* --- Выделение renorm-буфера под ОДИН блок.
+       Каждый символ блока → 0..1 renorm-слово. Верхняя оценка на блок:
+       BLOCK_BYTES слов + запас. Буфер один на все блоки (переиспользуется). --- */
+    size_t buf_words = (size_t)(BLOCK_BYTES + BLOCK_BYTES / 50 + 1024);
     uint32_t *buf = (uint32_t *)malloc(buf_words * sizeof(uint32_t));
     if (!buf) {
         fprintf(stderr, "malloc buf\n");
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Кодирование: идём по входу НАЗАД (rANS LIFO).
-       Замер: только цикл кодирования, без I/O. --- */
+    /* --- Кодирование: проход по блокам ПРЯМОЙ, внутри блока — НАЗАД (LIFO).
+       Замер: только цикл Rans64EncPut, без I/O и без переворота. --- */
     rANS::Encoder enc;
-    size_t renorm_count = 0;
-
     zpl_u64 total_ticks = 0;
-    size_t i = n;
-    while (i > 0) {
-        size_t block = zpl_min(i, (size_t)PROGRESS_BLOCK);
+    size_t total_renorm = 0;
+    size_t blocks = 0;
+    size_t i = 0;   /* сколько байт входа уже закодировано (от начала) */
+
+    while (i < n) {
+        size_t a_lo = i;
+        size_t a_hi = zpl_min(i + (size_t)BLOCK_BYTES, n);
+        size_t block_syms = a_hi - a_lo;
+
+        enc = rANS::Encoder{};   /* свежий независимый state = RANS64_L */
+
+        /* Пишем renorm с КОНЦА буфера назад (buf[--buf_head]). Тогда слова
+           сразу ложатся в порядке потребления декодером (последняя эмиссия —
+           первой), и отдельный переворот не нужен. Запас (+n/50+1024) при
+           этом остаётся СПЕРЕДИ, нетронутым; для текста тронутый хвост буфера
+           мал и укладывается в L2. */
+        size_t buf_head = buf_words;
+
         zpl_u64 t0 = zpl_rdtsc();
-        for (size_t k = 0; k < block; k++) {
-            i--;
+        for (size_t k = 0, pos = a_hi; k < block_syms; k++) {
+            pos--;   /* обход среза НАЗАД: a_hi-1 ... a_lo */
             uint16_t cum_lo, freq;
-            model_get(m, data[i], &cum_lo, &freq);
+            model_get(m, data[pos], &cum_lo, &freq);
             auto res = enc.Rans64EncPut(cum_lo, freq, RANS_SCALE_BITS);
             if (res) {
-                if (renorm_count >= buf_words) {
+                if (buf_head == 0) {
                     fprintf(stderr, "renorm buffer overflow\n");
                     free(buf); zpl_file_close(&fout); free(data); return 1;
                 }
-                buf[renorm_count++] = *res;
+                buf[--buf_head] = *res;
             }
         }
         total_ticks += zpl_rdtsc() - t0;
-        printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
-               (uint64_t)(n - i), n, 100.0 * (double)(n - i) / (double)n);
-        fflush(stdout);
-    }
 
-    /* flush — два слова поверх state */
-    auto flush_pair = enc.flush();
-    printf("\n");
+        auto flush_pair = enc.flush();
+        uint32_t flush_hi = (uint32_t)flush_pair.first;   /* HIGH32 state */
+        uint32_t flush_lo = (uint32_t)flush_pair.second;  /* LOW32  state */
 
-    /* --- Запись потока (вне замера) --- */
-    if (renorm_count > 0) {
-        if (!zpl_file_write(&fout, buf, sizeof(buf[0]) * renorm_count)) {
-            fprintf(stderr, "write renorm\n");
+        size_t renorm_count = buf_words - buf_head;
+
+        /* Заголовок блока: [renorm_count][flush_lo][flush_hi].
+           flush в паре (LOW, HIGH) — декодер Init({flush_lo, flush_hi})
+           соберёт state = flush_lo | (flush_hi<<32) = исходный state.
+           renorm пишем как есть (с buf_head) — порядок уже декодерный. */
+        uint32_t blk_hdr[3] = { (uint32_t)renorm_count, flush_lo, flush_hi };
+        if (!zpl_file_write(&fout, blk_hdr, sizeof(blk_hdr))) {
+            fprintf(stderr, "write block hdr\n");
             free(buf); zpl_file_close(&fout); free(data); return 1;
         }
+        if (renorm_count > 0) {
+            if (!zpl_file_write(&fout, buf + buf_head, sizeof(buf[0]) * renorm_count)) {
+                fprintf(stderr, "write renorm\n");
+                free(buf); zpl_file_close(&fout); free(data); return 1;
+            }
+        }
+
+        total_renorm += renorm_count;
+        blocks++;
+        i = a_hi;
+        printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
+               (uint64_t)i, n, 100.0 * (double)i / (double)n);
+        fflush(stdout);
     }
-    /* flush-пара: pair.first = HIGH32 state, pair.second = LOW32 state.
-       Пишем в исходном порядке (HIGH, LOW) — декодер поменяет местами при Init. */
-    uint32_t flush_words[2] = {
-        (uint32_t)flush_pair.first,
-        (uint32_t)flush_pair.second
-    };
-    if (!zpl_file_write(&fout, flush_words, sizeof(flush_words))) {
-        fprintf(stderr, "write flush\n");
-        free(buf); zpl_file_close(&fout); free(data); return 1;
-    }
+    printf("\n");
 
     zpl_i64 out_bytes = zpl_file_size(&fout);
     zpl_file_close(&fout);
@@ -226,7 +258,8 @@ int main(int argc, char **argv) {
     printf("  input:    %s\n", argv[1]);
     printf("  in_size:  %" PRIu64 " bytes\n", n);
     printf("  out_size: %" PRIi64 " bytes\n", out_bytes);
-    printf("  renorm:   %zu words\n", renorm_count);
+    printf("  blocks:   %zu  (block_bytes=%d)\n", blocks, BLOCK_BYTES);
+    printf("  renorm:   %zu words\n", total_renorm);
     printf("  ratio:    %.2f%%  (%.3f bits/byte)\n", ratio, bpb);
     printf("  encode:   %" PRIu64 " ms  (%.1f MB/s)\n", total_enc_time_ms, mb_s);
     printf("          : %u ticks per symbol\n", ticks_per_symbol);
