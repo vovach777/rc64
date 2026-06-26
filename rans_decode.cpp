@@ -2,9 +2,11 @@
  * RANS DECODE — 64-bit rANS, 14-битная статическая модель
  * =========================================================================
  *
- * Декодер читает поток ПОСЛЕДОВАТЕЛЬНО, блок за блоком. Под весь поток память
- * не выделяется — нужен только renorm-буфер под один блок (~1 МБ) и выходной
- * буфер 16 КБ. renorm внутри блока читается ВПЕРЁД (энкодер перевернул буфер).
+ * Декодер грузит весь renorm-поток в память (malloc), затем идёт по блокам
+ * ВПЕРЁД указателем words_p. renorm внутри блока читается ВПЕРЁД по факту
+ * потребления (энкодер перевернул буфер); число renorm-слов блока НЕ хранится —
+ * после декодирования block_syms символов указатель сам встаёт на flush-пару
+ * следующего блока (зеркальность rANS: кодировщик эмиттит K ⟺ декодер потребляет K).
  *
  * Usage:
  *   rans_decode <input_file.rans> <output_file>
@@ -14,7 +16,6 @@
  *   [8]    uint64_t original_len (LE)
  *   [512]  cum[1..256] uint16_t LE
  *   далее подряд блоки:
- *     [4]    uint32_t renorm_count (LE)
  *     [4]    uint32_t flush_lo  = LOW32  state блока (LE)
  *     [4]    uint32_t flush_hi  = HIGH32 state блока (LE)
  *     [4*K]  renorm uint32_t LE — В ПОРЯДКЕ ПОТРЕБЛЕНИЯ (читаем ВПЕРЁД)
@@ -24,9 +25,9 @@
  * в потоке не хранится.
  *
  * Декодер:
- *   - читает заголовок блока [renorm_count][flush_lo][flush_hi] и renorm-слова,
+ *   - читает flush-пару блока [flush_lo][flush_hi] (заголовка/renorm_count НЕТ),
  *   - Init({flush_lo, flush_hi}) (с обменом, как и раньше) → исходный state,
- *   - ест renorm ВПЕРЁД (ptr++), идёт по выходу ВПЕРЁД.
+ *   - ест renorm ВПЕРЁД по потреблению (words_p += Rans64Dec(...)), идёт по выходу ВПЕРЁД.
  * ========================================================================= */
 
 #include <cstdio>
@@ -159,8 +160,8 @@ int main(int argc, char **argv) {
 
     zpl_file fout;
     if (zpl_file_create(&fout, argv[2])) {
+        free(words);
         perror("fopen output");
-        zpl_file_close(&fin);
         return 1;
     }
 
@@ -179,8 +180,6 @@ int main(int argc, char **argv) {
         dec.Init({words_p[0], words_p[1]});
         words_p += 2;
 
-        /* Декодируем block_syms символов, потребляя renorm ВПЕРЁД (rp++). */
-        size_t rp = 0;
         size_t block_done = 0;
         while (block_done < block_syms) {
             size_t out_block = zpl_min(block_syms - block_done, (size_t)OUT_BUF_SIZE);
@@ -194,8 +193,10 @@ int main(int argc, char **argv) {
             }
             total_ticks += zpl_rdtsc() - t0;
             if (!zpl_file_write(&fout, out_buf, out_block)) {
+                free(words);
                 perror("fwrite error");
-                zpl_file_close(&fout); zpl_file_close(&fin); return 1;
+                zpl_file_close(&fout);
+                return 1;
             }
             block_done += out_block;
         }
@@ -216,6 +217,7 @@ int main(int argc, char **argv) {
         : 0.0;
 
     zpl_file_close(&fout);
+    free(words);
 
     printf("DECODE-RANS OK\n");
     printf("  engine:   64-bit rANS, 32-bit renorm, scale_bits=%u\n", RANS_SCALE_BITS);

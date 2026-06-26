@@ -17,11 +17,12 @@
  *   [512 байт] cum[1..256] — uint16_t LE (кумулятивные частоты, 14-бит)
  *              cum[0]=0 не хранится (всегда константа)
  *   далее подряд блоки (фиксированный размер ВХОДА BLOCK_BYTES):
- *     [4 байта]  uint32_t renorm_count — число renorm-слов блока (LE)
  *     [4 байта]  uint32_t flush_lo  = LOW32  финального state блока (LE)
  *     [4 байта]  uint32_t flush_hi  = HIGH32 финального state блока (LE)
  *     [4*K]      uint32_t renorm-слова блока, ПЕРЕВЁРНУТЫЕ (в порядке потребления
  *                декодером) — декодер читает их ВПЕРЁД
+ *   Число renorm-слов блока (K) В ПОТОКЕ НЕ ХРАНИТСЯ — декодер потребляет их
+ *   инлайн по факту и после block_syms символов сам попадает на след. flush-пару.
  *
  * Заголовок: 4 + 8 + 512 = 524 байта (как у .rc / .rc32).
  *
@@ -188,7 +189,7 @@ int main(int argc, char **argv) {
             model_get(m, data[i+k], &cum_lo, &freq);
             auto res = enc.Rans64EncPut(cum_lo, freq, RANS_SCALE_BITS);
             if (res) {
-                assert(buf_head > 0 && "renorm buffer overflow");
+                assert(buf_head > buf+16 && "renorm buffer overflow");
                 // if (buf_head == 0) {
                 //     fprintf(stderr, "renorm buffer overflow\n");
                 //     zpl_file_close(&fout); free(data); return 1;
