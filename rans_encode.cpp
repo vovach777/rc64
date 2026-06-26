@@ -61,7 +61,7 @@
    (макс. code length при freq=1), state_final ≥ RANS64_L (инвариант).
    => renorm_count ≤ BLOCK_BYTES*14/32 = 114688 (достигается на adversarial
    с freq=1). +1024 запас. Буфер ~450 КБ — влезает в 512 КБ L2. */
-#define RENORM_BUF_WORDS (BLOCK_BYTES * 14u / 32u + 1024)
+constexpr uint32_t RENORM_BUF_WORDS = (BLOCK_BYTES * 14u / 32u + 1024 +0xff) & ~0xff;
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -176,62 +176,44 @@ int main(int argc, char **argv) {
     size_t total_renorm = 0;
     size_t blocks = 0;
     size_t i = 0;   /* сколько байт входа уже закодировано (от начала) */
+    auto remaining = n;
 
-    while (i < n) {
-        size_t a_lo = i;
-        size_t a_hi = zpl_min(i + (size_t)BLOCK_BYTES, n);
-        size_t block_syms = a_hi - a_lo;
-
+    while (remaining) {
         enc = rANS::Encoder{};   /* свежий независимый state = RANS64_L */
-
-        /* Пишем renorm с КОНЦА буфера назад (buf[--buf_head]). Тогда слова
-           сразу ложатся в порядке потребления декодером (последняя эмиссия —
-           первой), и отдельный переворот не нужен. Запас (+n/50+1024) при
-           этом остаётся СПЕРЕДИ, нетронутым; для текста тронутый хвост буфера
-           мал и укладывается в L2. */
-        size_t buf_head = RENORM_BUF_WORDS;
-
+        const size_t block_syms = zpl_min((size_t)BLOCK_BYTES, remaining);
+        auto buf_head = buf +  RENORM_BUF_WORDS;
         zpl_u64 t0 = zpl_rdtsc();
-        for (size_t k = 0, pos = a_hi; k < block_syms; k++) {
-            pos--;   /* обход среза НАЗАД: a_hi-1 ... a_lo */
+        for (int k=block_syms-1; k >= 0; --k) {
             uint16_t cum_lo, freq;
-            model_get(m, data[pos], &cum_lo, &freq);
+            model_get(m, data[i+k], &cum_lo, &freq);
             auto res = enc.Rans64EncPut(cum_lo, freq, RANS_SCALE_BITS);
             if (res) {
-                if (buf_head == 0) {
-                    fprintf(stderr, "renorm buffer overflow\n");
-                    zpl_file_close(&fout); free(data); return 1;
-                }
-                buf[--buf_head] = *res;
+                assert(buf_head > 0 && "renorm buffer overflow");
+                // if (buf_head == 0) {
+                //     fprintf(stderr, "renorm buffer overflow\n");
+                //     zpl_file_close(&fout); free(data); return 1;
+                // }
+                *(--buf_head) = *res;
             }
         }
         total_ticks += zpl_rdtsc() - t0;
-
         auto flush_pair = enc.flush();
-        uint32_t flush_hi = (uint32_t)flush_pair.first;   /* HIGH32 state */
-        uint32_t flush_lo = (uint32_t)flush_pair.second;  /* LOW32  state */
+        *(--buf_head) = flush_pair.first;
+        *(--buf_head) = flush_pair.second;
 
-        size_t renorm_count = (size_t)RENORM_BUF_WORDS - buf_head;
+        i += block_syms;
+        remaining -= block_syms;
 
-        /* Заголовок блока: [renorm_count][flush_lo][flush_hi].
-           flush в паре (LOW, HIGH) — декодер Init({flush_lo, flush_hi})
-           соберёт state = flush_lo | (flush_hi<<32) = исходный state.
-           renorm пишем как есть (с buf_head) — порядок уже декодерный. */
-        uint32_t blk_hdr[3] = { (uint32_t)renorm_count, flush_lo, flush_hi };
-        if (!zpl_file_write(&fout, blk_hdr, sizeof(blk_hdr))) {
-            fprintf(stderr, "write block hdr\n");
+        size_t renorm_count = buf + RENORM_BUF_WORDS - buf_head;
+
+        assert(renorm_count > 0);
+        if (!zpl_file_write(&fout, buf_head, sizeof(buf[0]) * renorm_count)) {
+            fprintf(stderr, "write renorm\n");
             zpl_file_close(&fout); free(data); return 1;
-        }
-        if (renorm_count > 0) {
-            if (!zpl_file_write(&fout, buf + buf_head, sizeof(buf[0]) * renorm_count)) {
-                fprintf(stderr, "write renorm\n");
-                zpl_file_close(&fout); free(data); return 1;
-            }
         }
 
         total_renorm += renorm_count;
         blocks++;
-        i = a_hi;
         printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
                (uint64_t)i, n, 100.0 * (double)i / (double)n);
         fflush(stdout);

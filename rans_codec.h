@@ -65,7 +65,7 @@ namespace rANS
 
         auto flush()
         {
-            return std::make_pair( ((state >> 32) & 0xFFFFFFFFU), (state & 0xFFFFFFFFU) );
+            return std::make_pair( uint32_t( ((state >> 32) & 0xFFFFFFFFU)), uint32_t((state & 0xFFFFFFFFU)) );
         }
     };
 

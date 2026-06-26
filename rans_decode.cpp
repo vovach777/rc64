@@ -129,12 +129,34 @@ int main(int argc, char **argv) {
     zpl_u64 zpl_rdtsc_freq = (zpl_rdtsc() - dddd) * 10;
     printf("CPU freq = %1.1f Mhz\n", zpl_rdtsc_freq / 1000000.0f);
 
-    /* renorm-буфер под ОДИН блок (один на все блоки). Размер фиксирован —
-       статический, без malloc/free (живёт в BSS). */
-    static uint32_t buf[RENORM_BUF_WORDS];
-    const size_t buf_words = RENORM_BUF_WORDS;
+    zpl_i64 rans_data_len = (zpl_file_size(&fin) - 524);
+    const size_t buf_words = rans_data_len/4;
 
-    /* Выходной файл — отдельный дескриптор (входной fin дочитываем на лету). */
+
+
+    uint64_t rans_u32_len = (buf_words+1)*4;
+    uint32_t *words = (uint32_t *) malloc( rans_u32_len  );
+    if ( words == NULL) {
+        fprintf(stderr, "malloc words\n");
+        zpl_file_close(&fin);
+        return 1;
+    }
+    uint8_t *u8_p =(uint8_t*)words;
+    int64_t u8_len = rans_data_len;
+    while ( u8_len> 0 ) {
+        uint32_t chunk = (uint32_t)zpl_min(u8_len, 0x1000000LL);
+
+        if (zpl_file_read (&fin,u8_p , chunk) != 1) {
+           fprintf(stderr, "read error\n"); zpl_file_close(&fin);
+           free(words);
+           return 1;
+        }
+       u8_p  += chunk;
+       u8_len -= chunk;
+    }
+    zpl_file_close(&fin);
+
+
     zpl_file fout;
     if (zpl_file_create(&fout, argv[2])) {
         perror("fopen output");
@@ -145,37 +167,17 @@ int main(int argc, char **argv) {
     zpl_u64 total_ticks = 0;
     size_t i = 0;   /* выдано байт */
 
+    auto words_p = words;
+
     while (i < n) {
         size_t block_syms = zpl_min(n - i, (size_t)BLOCK_BYTES);
 
-        /* Заголовок блока: [renorm_count][flush_lo][flush_hi]. */
-        uint32_t blk_hdr[3];
-        if (!zpl_file_read(&fin, blk_hdr, sizeof(blk_hdr))) {
-            fprintf(stderr, "read block hdr\n");
-            zpl_file_close(&fout); zpl_file_close(&fin); return 1;
-        }
-        uint32_t renorm_count = blk_hdr[0];
-        uint32_t flush_lo     = blk_hdr[1];
-        uint32_t flush_hi     = blk_hdr[2];
-
-        if (renorm_count > buf_words) {
-            fprintf(stderr, "block renorm overflow (%u > %zu)\n",
-                    renorm_count, buf_words);
-            zpl_file_close(&fout); zpl_file_close(&fin); return 1;
-        }
-
-        /* renorm-слова блока — читаем ВПЕРЁД (энкодер перевернул). */
-        if (renorm_count > 0) {
-            if (!zpl_file_read(&fin, buf, sizeof(buf[0]) * renorm_count)) {
-                fprintf(stderr, "read block renorm\n");
-                zpl_file_close(&fout); zpl_file_close(&fin); return 1;
-            }
-        }
 
         /* Init({flush_lo, flush_hi}) строит state = flush_lo | (flush_hi<<32)
            = (HIGH<<32) | LOW = исходный финальный state блока. */
         rANS::Decoder dec;
-        dec.Init({flush_lo, flush_hi});
+        dec.Init({words_p[0], words_p[1]});
+        words_p += 2;
 
         /* Декодируем block_syms символов, потребляя renorm ВПЕРЁД (rp++). */
         size_t rp = 0;
@@ -187,17 +189,7 @@ int main(int argc, char **argv) {
                 uint32_t cum = dec.Rans64DecGet(RANS_SCALE_BITS);
                 uint16_t cum_lo, freq;
                 uint8_t sym = model_find_lut(lut, m, (uint16_t)cum, &cum_lo, &freq);
-
-                /* next — следующее слово для renorm, если потребуется. */
-                uint32_t next = (rp < renorm_count) ? buf[rp] : 0u;
-                bool consumed = dec.Rans64Dec(cum_lo, freq, RANS_SCALE_BITS, next);
-                if (consumed) {
-                    if (rp >= renorm_count) {
-                        fprintf(stderr, "renorm underflow\n");
-                        zpl_file_close(&fout); zpl_file_close(&fin); return 1;
-                    }
-                    rp++;
-                }
+                words_p += dec.Rans64Dec(cum_lo, freq, RANS_SCALE_BITS, *words_p);
                 out_buf[k] = sym;
             }
             total_ticks += zpl_rdtsc() - t0;
@@ -223,7 +215,6 @@ int main(int argc, char **argv) {
         ? (double)n / (total_dec_time_ms * 1048576.0 / 1000.0)
         : 0.0;
 
-    zpl_file_close(&fin);
     zpl_file_close(&fout);
 
     printf("DECODE-RANS OK\n");
@@ -231,6 +222,6 @@ int main(int argc, char **argv) {
     printf("  decode:   %" PRIu64 " ms  (%.1f MB/s)\n", total_dec_time_ms, mb_s);
     printf("          : %u ticks per symbol\n", ticks_per_symbol);
     printf("  memory:   %.2f MB (block buffer only)\n",
-           (float)buf_words / (1024.0f * 1024.0f / 4));
+           (float)rans_u32_len / (1024.0f * 1024.0f));
     return 0;
 }
