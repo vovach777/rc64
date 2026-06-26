@@ -44,6 +44,8 @@
 
 #define RANS_SCALE_BITS  14u
 #define BLOCK_BYTES      (256 * 1024)   /* фикс. размер блока ВХОДА (как у энкодера) */
+/* Потолок renorm-слов на блок = BLOCK_BYTES*14/32 + запас (см. rans_encode.cpp). */
+#define RENORM_BUF_WORDS (BLOCK_BYTES * 14u / 32u + 1024)
 #define OUT_BUF_SIZE     (16 * 1024)
 
 int main(int argc, char **argv) {
@@ -128,7 +130,7 @@ int main(int argc, char **argv) {
     printf("CPU freq = %1.1f Mhz\n", zpl_rdtsc_freq / 1000000.0f);
 
     /* renorm-буфер под ОДИН блок (один на все блоки). */
-    size_t buf_words = (size_t)(BLOCK_BYTES + BLOCK_BYTES / 50 + 1024);
+    size_t buf_words = (size_t)RENORM_BUF_WORDS;
     uint32_t *buf = (uint32_t *)malloc(buf_words * sizeof(uint32_t));
     if (!buf) {
         fprintf(stderr, "malloc buf\n");
