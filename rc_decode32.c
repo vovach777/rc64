@@ -1,8 +1,9 @@
 /* =========================================================================
- * RC32 DECODE — 32-битный in-place carry range coder (16-битные слова)
+ * RC32 DECODE — 32-bit in-place carry range coder (16-bit words)
  *
- * Сжатый поток целиком грузится в память. Вывод через статический буфер
- * 16KB, сброс на диск порциями. Во время сброса таймер выключен.
+ * The compressed stream is loaded entirely into memory. Output goes through
+ * a static 16KB buffer, flushed to disk in chunks. The timer is off during
+ * the flush.
  *
  * Usage:
  *   rc_decode32 <input_file.rc32> <output_file>
@@ -20,7 +21,7 @@
 #include "rc_codec_32.h"
 #include "model_12.h"
 
-#define OUT_BUF_SIZE (16 * 1024)  /* 16KB выходной буфер */
+#define OUT_BUF_SIZE (16 * 1024)  /* 16KB output buffer */
 
 int main(int argc, char **argv) {
     static uint8_t out_buf[OUT_BUF_SIZE];
@@ -33,7 +34,7 @@ int main(int argc, char **argv) {
     zpl_file_error err = zpl_file_open(&fin, argv[1]);
     if (err) { perror("fopen input"); return err; }
 
-    /* Заголовок */
+    /* Header */
     uint8_t sig[4];
     if (zpl_file_read(&fin, sig, sizeof(sig)) != 1) {
         fprintf(stderr, "read sig\n");
@@ -70,7 +71,7 @@ int main(int argc, char **argv) {
             perror("fopen output");
             return 1;
         }
-        /* Заполняем буфер rle_sym и пишем порциями */
+        /* Fill the buffer with rle_sym and write in chunks */
         memset(out_buf, rle_sym, OUT_BUF_SIZE);
         size_t remaining = n;
         while (remaining > 0) {
@@ -87,7 +88,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* RC mode: чтение кумулятивных частот cum[1..256] */
+    /* RC mode: reading cumulative frequencies cum[1..256] */
     model12_t M;
     memset(&M, 0, sizeof(M));
     if (zpl_file_read(&fin, M.cums + 1, sizeof(M.cums[0]) * ALPHABET_12) != 1) {
@@ -96,7 +97,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* LUT строится один раз по готовой таблице cums (если не DISABLE_LUT) */
+    /* LUT is built once from the ready cums table (unless DISABLE_LUT) */
 #ifndef DISABLE_LUT
     {
         int s = 0;
@@ -110,14 +111,14 @@ int main(int argc, char **argv) {
 
     zpl_i64 ac_data_len = zpl_file_size(&fin) - 524;  /* 4+8+512 */
 
-    /* Калибровка CPU */
+    /* CPU calibration */
     zpl_u64 t0xx = zpl_time_rel_ms() + 100;
     zpl_u64 dddd = zpl_rdtsc();
     while (zpl_time_rel_ms() < t0xx);
     zpl_u64 zpl_rdtsc_freq = (zpl_rdtsc() - dddd) * 10;
     printf("CPU freq = %1.1f Mhz\n", zpl_rdtsc_freq / 1000000.0f);
 
-    /* Чтение потока (16-битные слова) */
+    /* Reading the stream (16-bit words) */
     size_t ac_u16_len = (size_t)(ac_data_len / sizeof(uint16_t)) + 4;
     uint16_t *words = (uint16_t *)malloc(ac_u16_len * sizeof(uint16_t));
     if (!words) {
@@ -147,7 +148,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Декодирование */
+    /* Decoding */
     size_t words_total = (size_t)(ac_data_len / sizeof(uint16_t));
     rc32_dec_t rd;
     rc32_dec_init(&rd, words, words_total);

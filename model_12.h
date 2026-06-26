@@ -1,27 +1,27 @@
 /* =========================================================================
- * STATIC 12-BIT FREQUENCY MODEL (для 32-битного range coder'а)
+ * STATIC 12-BIT FREQUENCY MODEL (for the 32-bit range coder)
  * =========================================================================
  *
- * Фиксированные кумулятивные частоты, total = 2^12 = 4096.
- * Модель строится ОДИН РАЗ по всему входному потоку, не обновляется
- * во время кодирования (адаптация не нужна).
+ * Fixed cumulative frequencies, total = 2^12 = 4096.
+ * The model is built ONCE over the entire input stream and is not updated
+ * during coding (no adaptation needed).
  *
- * Кумулятивные частоты хранятся в uint16_t (12 бит хватает: 0..4096).
+ * Cumulative frequencies are stored in uint16_t (12 bits suffice: 0..4096).
  *
- * Поиск символа по cum-значению:
- *   - По умолчанию: прямой LUT uint8_t[TARGET_TOTAL_12+1] (4097 байт).
- *     O(1), одна cache line load. Идеально для декодера.
- *   - Если определён DISABLE_LUT: 8-шаговый binary search без ветвлений
- *     (старая реализация, 8 dependent loads из cums[257]).
+ * Symbol lookup by cum value:
+ *   - Default: direct LUT uint8_t[TARGET_TOTAL_12+1] (4097 bytes).
+ *     O(1), a single cache line load. Ideal for the decoder.
+ *   - If DISABLE_LUT is defined: 8-step branchless binary search
+ *     (old implementation, 8 dependent loads from cums[257]).
  *
- * МАСШТАБИРОВАНИЕ:
+ * SCALING:
  *   raw_freq[i] * 4096 / total_raw -> scaled[i]
- *   Если raw_freq[i] > 0 но scaled[i] == 0: scaled[i] = 1 (вычесть из max).
- *   Сумма scaled приводится к 4096 корректировкой максимальной частоты.
+ *   If raw_freq[i] > 0 but scaled[i] == 0: scaled[i] = 1 (subtract from max).
+ *   The sum of scaled is brought to 4096 by adjusting the maximum frequency.
  *
  * RLE:
- *   Если только один символ встречается (n_active <= 1) — range coding
- *   бессмысленен, используем RLE.
+ *   If only one symbol occurs (n_active <= 1) — range coding is pointless,
+ *   use RLE.
  * ========================================================================= */
 
 #ifndef MODEL_12_H
@@ -33,32 +33,32 @@
 #define ALPHABET_12         256
 #define TARGET_TOTAL_12     (1u << 12)   /* 4096 = 2^12 */
 
-/* Кумулятивные частоты: cum[0]=0, cum[256]=total.
+/* Cumulative frequencies: cum[0]=0, cum[256]=total.
    cum_lo(sym) = cum[sym], freq(sym) = cum[sym+1] - cum[sym].
-   Всё в uint16_t — 12 бит достаточно. */
+   All in uint16_t — 12 bits suffice. */
 typedef uint16_t cums12_t[ALPHABET_12 + 1];
 
-/* LUT: lut[cum] -> символ s, наибольший с cum[s] <= cum.
-   Размер = TARGET_TOTAL_12 + 1 = 4097 байт. */
+/* LUT: lut[cum] -> symbol s, the largest with cum[s] <= cum.
+   Size = TARGET_TOTAL_12 + 1 = 4097 bytes. */
 typedef uint8_t  lut12_t[TARGET_TOTAL_12 + 1];
 
-/* Полная модель: cums + опциональный LUT.
-   LUT строится только если не определён DISABLE_LUT.
-   Если LUT отключён — поле lut остаётся неиспользуемым (zero-sized через
-   условную компиляцию здесь не делаем — структура всегда одинаковая,
-   чтобы ABI был стабильным; экономия 4 KB памяти несущественна). */
+/* Full model: cums + optional LUT.
+   The LUT is built only if DISABLE_LUT is not defined.
+   If the LUT is disabled — the lut field remains unused (we do not make it
+   zero-sized via conditional compilation here — the structure is always the
+   same to keep the ABI stable; saving 4 KB of memory is negligible). */
 typedef struct {
     cums12_t cums;
     lut12_t  lut;
 } model12_t;
 
-/* Построить модель по сырым частотам.
-   raw_freq[256] — счётчики байтов.
-   Возвращает:
-      1  — RLE (только один активный символ, в cums[1] = first_sym)
-      0  — OK (полная модель, LUT построен)
-     -1  — пустой поток (n_active == 0)
-     -2  — внутренняя ошибка (сумма не сошлась) */
+/* Build the model from raw frequencies.
+   raw_freq[256] — byte counters.
+   Returns:
+      1  — RLE (only one active symbol, in cums[1] = first_sym)
+      0  — OK (full model, LUT built)
+     -1  — empty stream (n_active == 0)
+     -2  — internal error (sum did not converge) */
 static inline int model12_build(model12_t *M,
                                 const uint32_t raw_freq[ALPHABET_12]) {
     cums12_t m;
@@ -86,7 +86,7 @@ static inline int model12_build(model12_t *M,
         return -1;
     }
 
-    /* RLE: один активный символ */
+    /* RLE: one active symbol */
     if (n_active == 1) {
         m[0] = 0;
         m[1] = (uint16_t)first_sym;
@@ -94,7 +94,7 @@ static inline int model12_build(model12_t *M,
         return 1;
     }
 
-    /* МАСШТАБИРОВАНИЕ к 12 битам */
+    /* SCALING to 12 bits */
     uint16_t scaled[ALPHABET_12];
     memset(scaled, 0, sizeof(scaled));
     uint32_t sum = 0;
@@ -134,7 +134,7 @@ static inline int model12_build(model12_t *M,
                                      (TARGET_TOTAL_12 - sum));
     }
 
-    /* Сборка кумулятивной таблицы */
+    /* Assemble the cumulative table */
     m[0] = 0;
     for (i = 0; i < ALPHABET_12; i++) {
         m[i + 1] = (uint16_t)(m[i] + scaled[i]);
@@ -146,9 +146,9 @@ static inline int model12_build(model12_t *M,
     memcpy(M->cums, m, sizeof(cums12_t));
 
 #ifndef DISABLE_LUT
-    /* Построение LUT: для каждого cum-значения v найти наибольший символ s
-       с cum[s] <= v. Делаем одним проходом: идём по v от 0 до TARGET_TOTAL,
-       продвигаясь по s пока cum[s+1] <= v. */
+    /* Build the LUT: for each cum value v find the largest symbol s
+       with cum[s] <= v. Done in a single pass: walk v from 0 to TARGET_TOTAL,
+       advancing s while cum[s+1] <= v. */
     {
         int s = 0;
         unsigned v;
@@ -164,19 +164,19 @@ static inline int model12_build(model12_t *M,
     return 0;
 }
 
-/* Получить cum_lo и freq для символа sym. */
+/* Get cum_lo and freq for symbol sym. */
 static inline void model12_get(const model12_t *M, uint8_t sym,
                                uint16_t *cum_lo, uint16_t *freq) {
     *cum_lo = M->cums[sym];
     *freq   = (uint16_t)(M->cums[sym + 1] - M->cums[sym]);
 }
 
-/* Найти символ по кумулятивному значению cum (для декодера). */
+/* Find the symbol by cumulative value cum (for the decoder). */
 static inline uint8_t model12_find(const model12_t *M, uint16_t cum,
                                    uint16_t *cum_lo, uint16_t *freq) {
     uint8_t s;
 #ifdef DISABLE_LUT
-    /* 8-шаговый binary search без ветвлений (cmov). */
+    /* 8-step branchless binary search (cmov). */
     const uint16_t *m = M->cums;
     const uint16_t *base = m;
     base += (cum >= base[128]) ? 128 : 0;
@@ -189,7 +189,7 @@ static inline uint8_t model12_find(const model12_t *M, uint16_t cum,
     base += (cum >= base[1])   ? 1   : 0;
     s = (uint8_t)(base - m);
 #else
-    /* Прямой LUT: одна cache line load. */
+    /* Direct LUT: a single cache line load. */
     s = M->lut[cum];
 #endif
     *cum_lo = M->cums[s];

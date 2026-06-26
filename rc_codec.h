@@ -2,37 +2,37 @@
  * SCHINDLER 64-BIT RANGE CODER — INPLACE VARIANT (v2)
  * =========================================================================
  *
- * Cache и FF пишутся сразу в выходной буфер. При carry — один memset
- * патчит FF блок в 0x00000000, cache++ inplace. Нет deferred FF,
- * нет циклов записи на safe emit.
+ * Cache and FF are written directly to the output buffer. On carry, a single
+ * memset patches the FF block to 0x00000000, cache++ inplace. No deferred FF,
+ * no write loops on safe emit.
  *
- * Структура содержит указатели на выходной буфер — память выделяется
- * один раз вызывающим кодом, перевыделения нет.
+ * The struct holds pointers into the output buffer — memory is allocated once
+ * by the caller, no reallocation.
  *
- * ВАЖНО: placeholder-слово в начале буфера убрано. cache_ptr в init
- * указывает на static dummy (мусорная переменная в файле).
- * После первого safe-emit cache_ptr переставляется на реальную позицию
- * в буфере. Если safe-emit не произошло (короткий файл) — flush пишет
- * в dummy, но cache в этом случае всегда 0, терять нечего.
+ * IMPORTANT: the placeholder word at the start of the buffer is removed. In
+ * init, cache_ptr points to a static dummy (a junk variable in this file).
+ * After the first safe-emit, cache_ptr is repointed to the real position in
+ * the buffer. If safe-emit never happened (short file), flush writes into the
+ * dummy, but in that case cache is always 0, so nothing is lost.
  * ========================================================================= */
 
 #include <stdint.h>
 #include <string.h>
 
-#include "model.h"  /* TARGET_TOTAL = 2^14, передаётся как compile-time constant */
+#include "model.h"  /* TARGET_TOTAL = 2^14, passed as a compile-time constant */
 
 #define SCHINDLER_BOTTOM_64 0x0000000100000000ULL
 
 typedef struct {
     uint64_t low;
     uint64_t range;
-    uint32_t cache;         /* значение cache слова */
-    uint32_t *cache_ptr;    /* указатель на cache слово в буфере (или на dummy в init) */
-    uint32_t *ff_start;     /* указатель на начало блока FF */
-    uint32_t ff_count;      /* кол-во FF слов в блоке */
-    uint32_t *out_ptr;      /* текущая позиция записи в буфере */
-    uint32_t *out_end;      /* конец буфера (для проверки) */
-    uint32_t *buf_start;    /* начало буфера (для backward walk) */
+    uint32_t cache;         /* value of the cache word */
+    uint32_t *cache_ptr;    /* pointer to the cache word in the buffer (or to dummy in init) */
+    uint32_t *ff_start;     /* pointer to the start of the FF block */
+    uint32_t ff_count;      /* number of FF words in the block */
+    uint32_t *out_ptr;      /* current write position in the buffer */
+    uint32_t *out_end;      /* end of buffer (for bounds checking) */
+    uint32_t *buf_start;    /* start of buffer (for backward walk) */
 } rc_enc_t;
 
 typedef struct {
@@ -40,7 +40,7 @@ typedef struct {
     uint64_t code;
 } rc_dec_t;
 
-/* --- Энкодер --- */
+/* --- Encoder --- */
 
 static inline __attribute__((always_inline))
 void rc_enc_init(rc_enc_t *rc, uint32_t *buf, size_t buf_words) {
@@ -50,9 +50,9 @@ void rc_enc_init(rc_enc_t *rc, uint32_t *buf, size_t buf_words) {
     rc->out_ptr = buf;
     rc->out_end = buf + buf_words;
     rc->buf_start = buf;
-    /* Мусорная переменная для cache_ptr до первого safe-emit.
-        flush пишет сюда cache (=0, т.к. без renorm carry невозможен).
-        static — одна на всю программу, не загрязняет структуру. */
+    /* Junk variable for cache_ptr until the first safe-emit.
+        flush writes cache here (=0, since without renorm carry is impossible).
+        static — one per whole program, does not pollute the struct. */
     static uint32_t rc_enc_cache_dummy = 0;
     rc->cache_ptr = &rc_enc_cache_dummy;
     rc->ff_start = NULL;
@@ -72,8 +72,8 @@ void rc_enc_step(rc_enc_t *rc, uint32_t cum_lo, uint32_t freq, uint32_t total) {
         rc->cache++;
         if (rc->cache == 0) {
             /* Cache wrapped (0xFFFFFFFF → 0x00000000).
-               Обратное распространение: cache → 0, идём назад
-               инкрементируя пока не найдём не-FF. */
+               Carry propagation: cache → 0, walk backward
+               incrementing until a non-FF word is found. */
             *rc->cache_ptr = 0;
             uint32_t *p = rc->cache_ptr;
             while (p > rc->buf_start) {
@@ -87,7 +87,7 @@ void rc_enc_step(rc_enc_t *rc, uint32_t cum_lo, uint32_t freq, uint32_t total) {
         } else {
             *rc->cache_ptr = rc->cache;
         }
-        /* FF блок → 0x00000000 одной memset */
+        /* FF block → 0x00000000 with a single memset */
         if (rc->ff_count > 0) {
             memset(rc->ff_start, 0x00, (size_t)rc->ff_count * sizeof(uint32_t));
         }
@@ -99,12 +99,12 @@ void rc_enc_step(rc_enc_t *rc, uint32_t cum_lo, uint32_t freq, uint32_t total) {
         uint32_t out_dword = (uint32_t)(rc->low >> 32);
 
         if (out_dword == 0xFFFFFFFF) {
-            /* STRADDLE: пишем FF сразу */
+            /* STRADDLE: write FF immediately */
             if (rc->ff_count == 0) rc->ff_start = rc->out_ptr;
             *rc->out_ptr++ = 0xFFFFFFFF;
             rc->ff_count++;
         } else {
-            /* SAFE EMIT: новое слово становится cache */
+            /* SAFE EMIT: the new word becomes the cache */
             rc->cache = out_dword;
             rc->cache_ptr = rc->out_ptr;
             *rc->out_ptr++ = out_dword;
@@ -118,16 +118,16 @@ void rc_enc_step(rc_enc_t *rc, uint32_t cum_lo, uint32_t freq, uint32_t total) {
 
 static inline __attribute__((always_inline))
 void rc_enc_flush(rc_enc_t *rc) {
-    /* Финальный cache уже в буфере на cache_ptr — обновляем */
+    /* Final cache is already in the buffer at cache_ptr — update it */
     *rc->cache_ptr = rc->cache;
-    /* FF уже в буфере. Дописываем low (2 слова). */
+    /* FF is already in the buffer. Append low (2 words). */
     *rc->out_ptr++ = (uint32_t)(rc->low >> 32);
     *rc->out_ptr++ = (uint32_t)(rc->low & 0xFFFFFFFF);
 }
 
-/* Кол-во записанных слов = rc->out_ptr - buf_start (считает вызывающий) */
+/* Number of written words = rc->out_ptr - buf_start (counted by the caller) */
 
-/* --- Декодер --- */
+/* --- Decoder --- */
 
 static inline __attribute__((always_inline))
 int rc_dec_init(rc_dec_t *rd, const uint32_t *in_buf) {

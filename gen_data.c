@@ -1,5 +1,5 @@
 /* =========================================================================
- * GEN_DATA — генератор тестовых данных для roundtrip-тестов
+ * GEN_DATA — test data generator for roundtrip tests
  * =========================================================================
  *
  * Usage:
@@ -7,7 +7,7 @@
  *
  * dataset_id: 0=LOREM 1=CCODE 2=ENGLISH 3=RUSSIAN 4=REPEAT 5=RANDOM
  *
- * Использует test_data.h для текстовых наборов, LCG для RANDOM.
+ * Uses test_data.h for text datasets, LCG for RANDOM.
  * ========================================================================= */
 
 #include <stdio.h>

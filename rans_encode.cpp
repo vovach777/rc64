@@ -1,43 +1,45 @@
 /* =========================================================================
- * RANS ENCODE — 64-bit rANS, 14-битная статическая модель
+ * RANS ENCODE — 64-bit rANS, 14-bit static model
  * =========================================================================
  *
- * Интеграция rANS-кодека пользователя (см. rans_codec.h) в формат проекта rc64.
+ * Integration of the user rANS codec (see rans_codec.h) into the rc64 project format.
  *
  * Usage:
  *   rans_encode <input_file> <output_file.rans>
  *
- * Формат .rans:
- *   [4 байта]  сигнатура: 'r','n', flags, rle_sym
+ * .rans format:
+ *   [4 bytes]  signature: 'r','n', flags, rle_sym
  *              flags bit 0: is_rle
- *   [8 байт]   uint64_t original_len (LE)
+ *   [8 bytes]  uint64_t original_len (LE)
  *   --- RLE mode (is_rle=1) ---
- *              (больше ничего — rle_sym в сигнатуре)
+ *              (nothing else — rle_sym is in the signature)
  *   --- rANS mode (is_rle=0) ---
- *   [512 байт] cum[1..256] — uint16_t LE (кумулятивные частоты, 14-бит)
- *              cum[0]=0 не хранится (всегда константа)
- *   далее подряд блоки (фиксированный размер ВХОДА BLOCK_BYTES):
- *     [4 байта]  uint32_t flush_lo  = LOW32  финального state блока (LE)
- *     [4 байта]  uint32_t flush_hi  = HIGH32 финального state блока (LE)
- *     [4*K]      uint32_t renorm-слова блока, ПЕРЕВЁРНУТЫЕ (в порядке потребления
- *                декодером) — декодер читает их ВПЕРЁД
- *   Число renorm-слов блока (K) В ПОТОКЕ НЕ ХРАНИТСЯ — декодер потребляет их
- *   инлайн по факту и после block_syms символов сам попадает на след. flush-пару.
+ *   [512 bytes] cum[1..256] — uint16_t LE (cumulative frequencies, 14-bit)
+ *              cum[0]=0 is not stored (always a constant)
+ *   then consecutive blocks (fixed INPUT size BLOCK_BYTES):
+ *     [4 bytes]  uint32_t flush_lo  = LOW32  of the block's final state (LE)
+ *     [4 bytes]  uint32_t flush_hi  = HIGH32 of the block's final state (LE)
+ *     [4*K]      uint32_t renorm words of the block, REVERSED (in the order the
+ *                decoder consumes them) — the decoder reads them FORWARD
+ *   The number of renorm words per block (K) IS NOT STORED IN THE STREAM — the
+ *   decoder consumes them inline as needed and after block_syms symbols arrives
+ *   at the next flush pair by itself.
  *
- * Заголовок: 4 + 8 + 512 = 524 байта (как у .rc / .rc32).
+ * Header: 4 + 8 + 512 = 524 bytes (same as .rc / .rc32).
  *
- * Блочная схема (облегчаем декодер — весь реверс на энкодере):
- *   - Каждый блок = НЕЗАВИСИМЫЙ rANS: свой state = RANS64_L в начале, своя
- *     flush-пара в конце. Между блоками состояние не переносится.
- *   - Проход по блокам ПРЯМОЙ (блок 0 = начало входа, блок 1 = следующий срез,
- *     ...). Внутри блока обход ВХОДА НАЗАД (rANS LIFO): с a_hi-1 вниз до a_lo.
- *   - renorm-слова блока пишутся в буфер С КОНЦА назад (buf[--buf_head]) —
- *     тогда они сразу в порядке потребления декодером (последняя эмиссия
- *     первой), отдельный переворот буфера не нужен. Запас (+1024) при этом
- *     остаётся СПЕРЕДИ нетронутым и гарантирует, что buf_head не уйдёт в минус.
- *   - Размер блока по ВХОДУ фиксирован (BLOCK_BYTES), поэтому границы известны
- *     заранее — ОДИН проход, без pre-pass и без seek. На огромных файлах
- *     экономим память: буфер ~450 КБ (потолок renorm на блок) вместо ~N.
+ * Block scheme (lightening the decoder — all reversing is on the encoder):
+ *   - Each block = an INDEPENDENT rANS: its own state = RANS64_L at the start,
+ *     its own flush pair at the end. State is not carried across blocks.
+ *   - Block traversal is FORWARD (block 0 = start of input, block 1 = next slice,
+ *     ...). Within a block the INPUT is traversed BACKWARD (rANS LIFO): from
+ *     a_hi-1 down to a_lo.
+ *   - The block's renorm words are written into the buffer FROM THE END backward
+ *     (buf[--buf_head]) — then they are already in decoder-consumption order
+ *     (last emitted first), no separate buffer flip is needed. The slack (+1024)
+ *     stays untouched AT THE FRONT and guarantees buf_head never goes negative.
+ *   - The INPUT block size is fixed (BLOCK_BYTES), so boundaries are known in
+ *     advance — a SINGLE pass, no pre-pass and no seek. On huge files this saves
+ *     memory: a ~450 KB buffer (renorm ceiling per block) instead of ~N.
  * ========================================================================= */
 
 #include <cstdio>
@@ -53,15 +55,15 @@
 #include "rans_codec.h"
 #include "model.h"
 
-#define RANS_SCALE_BITS  14u   /* совпадает с TARGET_TOTAL = 2^14 из model.h */
-#define BLOCK_BYTES      (256 * 1024)   /* фиксированный размер блока ВХОДА */
+#define RANS_SCALE_BITS  14u   /* matches TARGET_TOTAL = 2^14 from model.h */
+#define BLOCK_BYTES      (256 * 1024)   /* fixed INPUT block size */
 
-/* Потолок renorm-слов на блок (доказано и подтверждено эмпирически):
-   renorm_count = (31 + n·H_cross − log2(state_final))/32, где
-   H_cross — кросс-энтропия (модель q vs данные p), H_cross ≤ 14 bpb
-   (макс. code length при freq=1), state_final ≥ RANS64_L (инвариант).
-   => renorm_count ≤ BLOCK_BYTES*14/32 = 114688 (достигается на adversarial
-   с freq=1). +1024 запас. Буфер ~450 КБ — влезает в 512 КБ L2. */
+/* Ceiling of renorm words per block (proven and confirmed empirically):
+   renorm_count = (31 + n·H_cross − log2(state_final))/32, where
+   H_cross is the cross-entropy (model q vs data p), H_cross ≤ 14 bpb
+   (max code length at freq=1), state_final ≥ RANS64_L (invariant).
+   => renorm_count ≤ BLOCK_BYTES*14/32 = 114688 (reached on adversarial
+   with freq=1). +1024 slack. Buffer ~450 KB — fits in 512 KB L2. */
 constexpr uint32_t RENORM_BUF_WORDS = (BLOCK_BYTES * 14u / 32u + 1024 +0xff) & ~0xff;
 
 int main(int argc, char **argv) {
@@ -70,7 +72,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* --- Чтение входного файла (вне замера) --- */
+    /* --- Reading the input file (outside the timed region) --- */
     zpl_file fin;
     if (zpl_file_open(&fin, argv[1])) {
         fprintf(stderr, "fopen input\n");
@@ -109,7 +111,7 @@ int main(int argc, char **argv) {
     }
     zpl_file_close(&fin);
 
-    /* --- Подсчёт частот и построение модели (вне замера) --- */
+    /* --- Frequency counting and model building (outside the timed region) --- */
     uint32_t raw_freq[ALPHABET];
     memset(raw_freq, 0, sizeof(raw_freq));
     for (size_t i = 0; i < n; i++) raw_freq[data[i]]++;
@@ -122,7 +124,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* --- Открытие выходного файла и запись заголовка (вне замера) --- */
+    /* --- Opening the output file and writing the header (outside the timed region) --- */
     zpl_file fout;
     if (zpl_file_create(&fout, argv[2])) {
         fprintf(stderr, "fopen output\n");
@@ -142,7 +144,7 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Калибровка частоты CPU --- */
+    /* --- CPU frequency calibration --- */
     zpl_u64 t0xx = zpl_time_rel_ms() + 100;
     zpl_u64 dddd = zpl_rdtsc();
     while (zpl_time_rel_ms() < t0xx);
@@ -159,28 +161,28 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* --- rANS mode: запись cum[1..256] --- */
+    /* --- rANS mode: writing cum[1..256] --- */
     if (!zpl_file_write(&fout, m + 1, sizeof(m[0]) * ALPHABET)) {
         fprintf(stderr, "write cum\n");
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- renorm-буфер под ОДИН блок (переиспользуется). Размер фиксирован —
-       доказанный потолок renorm-слов на блок (см. RENORM_BUF_WORDS), поэтому
-       static: без malloc/free, живёт в BSS. --- */
+    /* --- renorm buffer for ONE block (reused). Size is fixed — the proven
+       ceiling of renorm words per block (see RENORM_BUF_WORDS), hence
+       static: no malloc/free, lives in BSS. --- */
     static uint32_t buf[RENORM_BUF_WORDS];
 
-    /* --- Кодирование: проход по блокам ПРЯМОЙ, внутри блока — НАЗАД (LIFO).
-       Замер: только цикл Rans64EncPut, без I/O и без переворота. --- */
+    /* --- Encoding: FORWARD pass over blocks, BACKWARD within a block (LIFO).
+       Timed: only the Rans64EncPut loop, excluding I/O and the flip. --- */
     rANS::Encoder enc;
     zpl_u64 total_ticks = 0;
     size_t total_renorm = 0;
     size_t blocks = 0;
-    size_t i = 0;   /* сколько байт входа уже закодировано (от начала) */
+    size_t i = 0;   /* how many input bytes have been encoded (from the start) */
     auto remaining = n;
 
     while (remaining) {
-        enc = rANS::Encoder{};   /* свежий независимый state = RANS64_L */
+        enc = rANS::Encoder{};   /* fresh independent state = RANS64_L */
         const size_t block_syms = zpl_min((size_t)BLOCK_BYTES, remaining);
         auto buf_head = buf +  RENORM_BUF_WORDS;
         zpl_u64 t0 = zpl_rdtsc();
@@ -225,7 +227,7 @@ int main(int argc, char **argv) {
     zpl_file_close(&fout);
     free(data);
 
-    /* --- Отчёт --- */
+    /* --- Report --- */
     uint32_t ticks_per_symbol = (n > 0) ? (uint32_t)(total_ticks / n) : 0;
     uint64_t total_enc_time_ms = (zpl_rdtsc_freq > 0)
         ? (uint64_t)(total_ticks * 1000 / zpl_rdtsc_freq)

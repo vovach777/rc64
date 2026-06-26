@@ -1,23 +1,23 @@
 /* =========================================================================
- * RC32 ENCODE — 32-битный in-place carry range coder (16-битные слова)
+ * RC32 ENCODE — 32-bit in-place carry range coder (16-bit words)
  *
- * Интеграция проверенного движка (см. rc_codec_32.h) в проект rc64.
+ * Integration of the verified engine (see rc_codec_32.h) into the rc64 project.
  *
  * Usage:
  *   rc_encode32 <input_file> <output_file.rc32>
  *
- * Формат .rc32:
- *   [4 байта]  сигнатура: 'r','3', flags, rle_sym
+ * .rc32 format:
+ *   [4 bytes]  signature: 'r','3', flags, rle_sym
  *              flags bit 0: is_rle
- *   [8 байт]   uint64_t original_len (LE)
+ *   [8 bytes]  uint64_t original_len (LE)
  *   --- RLE mode (is_rle=1) ---
- *              (больше ничего — rle_sym в сигнатуре)
+ *              (nothing else — rle_sym is in the signature)
  *   --- RC mode (is_rle=0) ---
- *   [512 байт] cum[1..256] — uint16_t LE (кумулятивные частоты, 12-бит)
- *              cum[0]=0 не хранится (константа)
- *   [2*N байт] uint16_t words LE — поток энкодера
+ *   [512 bytes] cum[1..256] — uint16_t LE (cumulative frequencies, 12-bit)
+ *              cum[0]=0 is not stored (constant)
+ *   [2*N bytes] uint16_t words LE — encoder stream
  *
- * Заголовок: 4 + 8 + 512 = 524 байта (как у .rc, только сигнатура 'r3' а не 'rc').
+ * Header: 4 + 8 + 512 = 524 bytes (same as .rc, only signature is 'r3' not 'rc').
  * ========================================================================= */
 
 #include <stdio.h>
@@ -33,7 +33,7 @@
 #include "rc_codec_32.h"
 #include "model_12.h"
 
-/* Размер блока для прогресса. */
+/* Block size for progress reporting. */
 #define PROGRESS_BLOCK (16 * 1024)
 
 int main(int argc, char **argv) {
@@ -42,7 +42,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* --- Чтение входного файла --- */
+    /* --- Reading the input file --- */
     zpl_file fin;
     if (zpl_file_open(&fin, argv[1])) {
         fprintf(stderr, "fopen input\n");
@@ -80,7 +80,7 @@ int main(int argc, char **argv) {
     }
     zpl_file_close(&fin);
 
-    /* --- Подсчёт частот --- */
+    /* --- Counting frequencies --- */
     uint32_t raw_freq[ALPHABET_12];
     memset(raw_freq, 0, sizeof(raw_freq));
     for (size_t i = 0; i < n; i++) raw_freq[data[i]]++;
@@ -93,7 +93,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* --- Открытие выходного файла --- */
+    /* --- Opening the output file --- */
     zpl_file fout;
     if (zpl_file_create(&fout, argv[2])) {
         fprintf(stderr, "fopen output\n");
@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Сигнатура: 'r','3' (отличается от 'r','c' 64-битной версии) */
+    /* Signature: 'r','3' (differs from 'r','c' of the 64-bit version) */
     uint8_t flags = !!is_rle;
     uint8_t rle_sym = (uint8_t)M.cums[1];
     uint8_t sig[4] = { 'r', '3', flags, rle_sym };
@@ -114,7 +114,7 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Калибровка частоты CPU --- */
+    /* --- CPU frequency calibration --- */
     zpl_u64 t0xx = zpl_time_rel_ms() + 100;
     zpl_u64 dddd = zpl_rdtsc();
     while (zpl_time_rel_ms() < t0xx);
@@ -131,15 +131,15 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* --- RC mode: запись cum[1..256] --- */
+    /* --- RC mode: writing cum[1..256] --- */
     if (!zpl_file_write(&fout, M.cums + 1, sizeof(M.cums[0]) * ALPHABET_12)) {
         fprintf(stderr, "write cum\n");
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Выделение буфера потока (16-битные слова) ---
-       Верхняя оценка: 1 слово (16 бит) на 1 байт входа (худший случай
-       для очень скошенных распределений) + запас на flush. */
+    /* --- Allocating the stream buffer (16-bit words) ---
+       Upper bound: 1 word (16 bits) per 1 input byte (worst case
+       for very skewed distributions) + headroom for flush. */
     size_t buf_words = (size_t)(n + n / 50 + 1024);
     uint16_t *buf = (uint16_t *)malloc(buf_words * sizeof(uint16_t));
     if (!buf) {
@@ -147,7 +147,7 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Кодирование --- */
+    /* --- Encoding --- */
     rc32_enc_t rc;
     rc32_enc_init(&rc, buf, buf_words);
 
@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
         free(buf); zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Запись потока --- */
+    /* --- Writing the stream --- */
     if (!zpl_file_write(&fout, buf, sizeof(buf[0]) * nwords)) {
         fprintf(stderr, "write word\n");
         free(buf); zpl_file_close(&fout); free(data); return 1;
@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
     free(buf);
     free(data);
 
-    /* --- Отчёт --- */
+    /* --- Report --- */
     uint32_t ticks_per_symbol = (n > 0) ? (uint32_t)(total_ticks / n) : 0;
     uint64_t total_enc_time_ms = (zpl_rdtsc_freq > 0)
         ? (uint64_t)(total_ticks * 1000 / zpl_rdtsc_freq)

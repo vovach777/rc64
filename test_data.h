@@ -1,14 +1,14 @@
 /* =========================================================================
- * TEST DATA — наборы данных для тестирования range coder'а
+ * TEST DATA — datasets for testing the range coder
  * =========================================================================
  *
- * Источник: rc_guillotine_bench.c (в котором лежат самые полные наборы).
- * 5 текстовых + 1 бинарный (генерируется в рантайме).
+ * Source: rc_guillotine_bench.c (which contains the most complete sets).
+ * 5 text + 1 binary (generated at runtime).
  *
- * Использование:
+ * Usage:
  *   #include "test_data.h"
  *   for (int s = 0; s < N_SOURCES; s++) {
- *       size_t len = sources[s].len;       // рекомендуемая длина
+ *       size_t len = sources[s].len;       // recommended length
  *       uint8_t *buf = make_dataset(s, target_len);
  *       ...
  *       free(buf);
@@ -23,7 +23,7 @@
 #include <string.h>
 
 /* ===================================================================== */
-/* ТЕКСТОВЫЕ ДАННЫЕ (статические строки)                                   */
+/* TEXT DATA (static strings)                                              */
 /* ===================================================================== */
 
 static const char LOREM[] =
@@ -90,7 +90,7 @@ static const char REPEAT[] =
     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
 /* ===================================================================== */
-/* ОПИСАНИЕ НАБОРОВ                                                        */
+/* DATASET DESCRIPTIONS                                                   */
 /* ===================================================================== */
 
 typedef enum {
@@ -99,14 +99,14 @@ typedef enum {
     DS_ENGLISH,
     DS_RUSSIAN,
     DS_REPEAT,
-    DS_RANDOM,           /* генерируется в рантайме (равномерный 0..255) */
+    DS_RANDOM,           /* generated at runtime (uniform 0..255) */
     N_SOURCES
 } dataset_id;
 
 typedef struct {
     const char *name;
-    const char *text;    /* NULL для DS_RANDOM */
-    size_t       len;    /* длина текста (для DS_RANDOM игнорируется) */
+    const char *text;    /* NULL for DS_RANDOM */
+    size_t       len;    /* text length (ignored for DS_RANDOM) */
 } dataset_desc;
 
 static const dataset_desc sources[] = {
@@ -119,19 +119,19 @@ static const dataset_desc sources[] = {
 };
 
 /* ===================================================================== */
-/* ГЕНЕРАТОР: циклически повторяет текст до target_len                     */
+/* GENERATOR: cyclically repeats text up to target_len                     */
 /* ===================================================================== */
 
-/* PRNG (Numerical Recipes LCG) для DS_RANDOM */
+/* PRNG (Numerical Recipes LCG) for DS_RANDOM */
 static uint64_t _td_rng_state = 0x123456789ABCDEF0ULL;
 static inline uint32_t _td_rng_next(void) {
     _td_rng_state = 6364136223846793005ULL * _td_rng_state + 1442695040888963407ULL;
     return (uint32_t)(_td_rng_state >> 32);
 }
 
-/* Вернуть malloc'нутый буфер размером target_len байт.
-   Для текстовых — циклическое повторение src.
-   Для DS_RANDOM — равномерный поток 0..255. */
+/* Return a malloc'd buffer of target_len bytes.
+   For text datasets — cyclic repetition of src.
+   For DS_RANDOM — uniform stream 0..255. */
 static uint8_t *make_dataset(dataset_id id, size_t target_len) {
     uint8_t *out = (uint8_t *)malloc(target_len);
     if (!out) return NULL;

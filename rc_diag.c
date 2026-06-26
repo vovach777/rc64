@@ -1,20 +1,20 @@
 /* =========================================================================
- * RC DIAG — диагностический кодер со статистикой по веткам
+ * RC DIAG — diagnostic encoder with per-branch statistics
  * =========================================================================
  *
  * Usage:
  *   rc_diag <input_file>
  *
- * Кодирует файл тем же алгоритмом что rc_encode, но НЕ пишет выход.
- * Вместо этого считает статистику по веткам кодера:
- *   - carry hits: сколько раз сработал перенос (low < step)
- *   - renorm hits: сколько раз range < BOTTOM (нужен сдвиг)
- *   - renorm miss: сколько раз сдвиг не понадобился
- *   - straddle hits: сколько раз out_dword == 0xFFFFFFFF
- *   - straddle max chain: максимальная длина цепочки зависших FF
- *   - flush carry: был ли перенос при финализации
+ * Encodes a file with the same algorithm as rc_encode, but does NOT write output.
+ * Instead it collects statistics on encoder branches:
+ *   - carry hits: how many times a carry occurred (low < step)
+ *   - renorm hits: how many times range < BOTTOM (shift required)
+ *   - renorm miss: how many times no shift was required
+ *   - straddle hits: how many times out_dword == 0xFFFFFFFF
+ *   - straddle max chain: maximum length of a pending FF chain
+ *   - flush carry: whether a carry occurred during finalization
  *
- * Также считает теоретическую энтропию order-0 и bpb.
+ * Also computes the theoretical order-0 entropy and bpb.
  * ========================================================================= */
 
 #define _POSIX_C_SOURCE 199309L
@@ -31,7 +31,7 @@
 
 #define SCHINDLER_BOTTOM_64 0x0000000100000000ULL
 
-/* --- Состояние энкодера (копия из schindler_64_bit_automaton.c) --- */
+/* --- Encoder state (copy from schindler_64_bit_automaton.c) --- */
 typedef struct {
     uint64_t low;
     uint64_t range;
@@ -39,7 +39,7 @@ typedef struct {
     uint32_t ff_count;
 } diag_enc_t;
 
-/* --- Счётчики --- */
+/* --- Counters --- */
 typedef struct {
     uint64_t total_symbols;
     uint64_t carry_hits;       /* low += step; low < step */
@@ -47,10 +47,10 @@ typedef struct {
     uint64_t renorm_hits;      /* range < BOTTOM */
     uint64_t renorm_miss;      /* range >= BOTTOM */
     uint64_t straddle_hits;    /* out_dword == 0xFFFFFFFF */
-    uint64_t straddle_flushed;  /* FF слова выведенные без переноса */
-    uint64_t straddle_max_chain; /* макс ff_count за весь прогон */
-    uint64_t flush_words;       /* слов выведенных при flush */
-    uint64_t flush_carry;       /* был ли перенос в flush (cache++ из последнего step) */
+    uint64_t straddle_flushed;  /* FF words emitted without carry */
+    uint64_t straddle_max_chain; /* max ff_count over the whole run */
+    uint64_t flush_words;       /* words emitted during flush */
+    uint64_t flush_carry;       /* whether a carry occurred in flush (cache++ from the last step) */
 } diag_stats_t;
 
 static void diag_enc_init(diag_enc_t *rc) {
@@ -60,7 +60,7 @@ static void diag_enc_init(diag_enc_t *rc) {
     rc->ff_count = 0;
 }
 
-/* Кодирование одного символа со счётчиками. out_buf не нужен — мы не пишем. */
+/* Encode a single symbol with counters. No out_buf needed — we don't write. */
 static void diag_encode_step(diag_enc_t *rc, diag_stats_t *st,
                              uint32_t cum_lo, uint32_t freq, uint32_t total) {
     uint64_t t = rc->range / total;
@@ -73,7 +73,7 @@ static void diag_encode_step(diag_enc_t *rc, diag_stats_t *st,
     if (rc->low < step) {
         st->carry_hits++;
         rc->cache++;
-        /* FF слова оборачиваются в 0 (мы их не пишем, только считаем) */
+        /* FF words wrap around to 0 (we don't write them, only count) */
         st->straddle_flushed += rc->ff_count;
         if (rc->ff_count > st->straddle_max_chain)
             st->straddle_max_chain = rc->ff_count;
@@ -95,7 +95,7 @@ static void diag_encode_step(diag_enc_t *rc, diag_stats_t *st,
             if (rc->ff_count > st->straddle_max_chain)
                 st->straddle_max_chain = rc->ff_count;
         } else {
-            /* безопасный вывод (cache + FF) — не пишем, считаем */
+            /* safe emit (cache + FF) — don't write, count */
             st->straddle_flushed += rc->ff_count;
             if (rc->ff_count > st->straddle_max_chain)
                 st->straddle_max_chain = rc->ff_count;
@@ -111,11 +111,11 @@ static void diag_encode_step(diag_enc_t *rc, diag_stats_t *st,
 }
 
 static void diag_enc_flush(diag_enc_t *rc, diag_stats_t *st) {
-    /* cache + ff_count + 2 слова low */
+    /* cache + ff_count + 2 words of low */
     st->flush_words = 1 + rc->ff_count + 2;
-    /* Проверка: был ли перенос в последнем step (cache инкрементирован) */
-    /* Мы не можем точно знать, но если ff_count > 0 при flush,
-       значит цепочка не разрешилась переносом */
+    /* Check: whether a carry occurred in the last step (cache incremented) */
+    /* We cannot know for sure, but if ff_count > 0 at flush,
+       the chain was not resolved by a carry */
 }
 
 int main(int argc, char **argv) {
@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* --- Чтение входного файла --- */
+    /* --- Read input file --- */
     FILE *fin = fopen(argv[1], "rb");
     if (!fin) { perror("fopen input"); return 1; }
     fseek(fin, 0, SEEK_END);
@@ -139,12 +139,12 @@ int main(int argc, char **argv) {
     }
     fclose(fin);
 
-    /* --- Подсчёт частот --- */
+    /* --- Frequency counting --- */
     uint32_t raw_freq[ALPHABET];
     memset(raw_freq, 0, sizeof(raw_freq));
     for (size_t i = 0; i < n; i++) raw_freq[data[i]]++;
 
-    /* --- Энтропия order-0 --- */
+    /* --- Order-0 entropy --- */
     double entropy = 0.0;
     for (int i = 0; i < ALPHABET; i++) {
         if (raw_freq[i] > 0) {
@@ -154,14 +154,14 @@ int main(int argc, char **argv) {
     }
     double theory_bpb = entropy;  /* bits per byte */
 
-    /* --- Построение модели --- */
+    /* --- Build model --- */
     cums_t m;
     int res = model_build(m, raw_freq);
     if (res < 0) {
         fprintf(stderr, "model_build failed: %d\n", res); free(data); return 1;
     }
 
-    /* --- Кодирование со счётчиками --- */
+    /* --- Encoding with counters --- */
     diag_enc_t rc;
     diag_enc_init(&rc);
     diag_stats_t st;
@@ -172,7 +172,7 @@ int main(int argc, char **argv) {
     int64_t t0 = timer_ticks();
 
     if (res) {
-        /* RLE: кодер не работает, выход = 12 байт */
+        /* RLE: encoder does not run, output = 12 bytes */
         printf("=== RC DIAG: %s ===\n", argv[1]);
         printf("\n");
         printf("RLE mode (single symbol 0x%02X)\n", m[1]);
@@ -195,27 +195,27 @@ int main(int argc, char **argv) {
     int64_t t1 = timer_ticks();
     double elapsed_ms = (double)(t1 - t0) * 1000.0 / (double)tfreq;
 
-    /* --- Оценка выходного размера --- */
+    /* --- Estimate output size --- */
     /* header: 4 + 8 = 12. freq table: 512. total = 524.
-       Поток слов: считаем из статы.
+       Word stream: derived from statistics.
        carry_hits * (ff_count_at_time) + renorm_hits * (1 + ff_at_time) ...
-       Проще: выведенных слов = (renorm_hits - straddle текущих) + flush_words.
-       Но точный подсчёт сложен. Оценим по факту: */
-    /* На каждый renorm_hit без straddle: 1 cache + ff_count_на_тот_момент слов.
-       На straddle: 0 слов (только ff_count++).
-       На carry: ff_count слов (оборачиваются в 0) + 1 cache (при следующем выводе).
-       Итого: stream_words = renorm_hits - straddle_hits + straddle_flushed + flush_words.
-       Нет, точнее: каждый renorm hit выводит 1 (cache) + ff_count (если не straddle).
-       straddle не выводит ничего.
-       carry выводит ff_count (в нули).
-       Упрощаем: stream_words ≈ straddle_flushed + carry_hits + (renorm_hits - straddle_hits) + flush_words */
-    /* Точнее не считаем — просто оценка для диагностики. */
+       Simpler: emitted words = (renorm_hits - straddle current) + flush_words.
+       But exact accounting is complex. Estimate by fact: */
+    /* For each renorm_hit without straddle: 1 cache + ff_count_at_that_moment words.
+       For straddle: 0 words (only ff_count++).
+       For carry: ff_count words (wrap to 0) + 1 cache (on next emit).
+       Total: stream_words = renorm_hits - straddle_hits + straddle_flushed + flush_words.
+       No, more precisely: each renorm hit emits 1 (cache) + ff_count (if not straddle).
+       straddle emits nothing.
+       carry emits ff_count (into zeros).
+       Simplify: stream_words ≈ straddle_flushed + carry_hits + (renorm_hits - straddle_hits) + flush_words */
+    /* We don't count more precisely — just an estimate for diagnostics. */
     uint64_t stream_words_approx = st.renorm_hits - st.straddle_hits + st.straddle_flushed + st.flush_words;
     uint64_t out_bytes_approx = 12 + 512 + stream_words_approx * 4;
     double approx_bpb = (n > 0) ? (double)out_bytes_approx * 8.0 / (double)n : 0.0;
     double approx_ratio = (n > 0) ? (double)out_bytes_approx / (double)n * 100.0 : 0.0;
 
-    /* --- Отчёт --- */
+    /* --- Report --- */
     printf("=== RC DIAG: %s ===\n", argv[1]);
     printf("\n");
     printf("--- ВХОД ---\n");

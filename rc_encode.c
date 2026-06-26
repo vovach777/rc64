@@ -1,29 +1,29 @@
 /* =========================================================================
- * RC ENCODE v2 — inplace cache/FF, статическая 14-битная модель
+ * RC ENCODE v2 — inplace cache/FF, static 14-bit model
  * =========================================================================
  *
- * Перенесён на zpl.h (как rc_decode.c):
- *   - I/O через zpl_file (zpl_file_open / zpl_file_create / zpl_file_read /
+ * Ported to zpl.h (like rc_decode.c):
+ *   - I/O via zpl_file (zpl_file_open / zpl_file_create / zpl_file_read /
  *     zpl_file_write / zpl_file_close / zpl_file_size)
- *   - Замер через zpl_rdtsc() с автокалибровкой частоты CPU
- *   - Прогресс по ходу кодирования (по блокам 16KB), как в декодере
- *   - Изолированный замер: только цикл кодирования считается в total_ticks;
- *     I/O (чтение входа, запись выхода) И модели (model_build) НЕ входят в
- *     замер — это симметрично тому, как декодер не учитывает загрузку .rc
- *     и сброс out_buf на диск.
+ *   - Timing via zpl_rdtsc() with auto-calibration of the CPU frequency
+ *   - Progress reported during encoding (in 16KB blocks), like the decoder
+ *   - Isolated timing: only the encoding loop is counted in total_ticks;
+ *     I/O (reading input, writing output) and the model (model_build) are
+ *     NOT included in the measurement — this is symmetric to the decoder,
+ *     which does not count loading the .rc file and flushing out_buf to disk.
  *
  * Usage:
  *   rc_encode <input_file> <output_file>
  *
- * Формат .rc:
- *   [4 байта]  сигнатура 'r','c', flags, rle_sym
- *   [8 байт]   uint64_t original_len (LE)
+ * .rc format:
+ *   [4 bytes]  signature 'r','c', flags, rle_sym
+ *   [8 bytes]  uint64_t original_len (LE)
  *   --- RLE mode ---
- *              (больше ничего)
+ *              (nothing else)
  *   --- RC mode ---
- *   [512 байт] cum[1..256] — uint16_t LE (кумулятивные частоты)
- *              cum[0]=0 не хранится (всегда константа)
- *   [4*N байт] uint32_t words LE — поток энкодера
+ *   [512 bytes] cum[1..256] — uint16_t LE (cumulative frequencies)
+ *              cum[0]=0 is not stored (always a constant)
+ *   [4*N bytes] uint32_t words LE — encoder stream
  * ========================================================================= */
 
 #include <stdio.h>
@@ -39,8 +39,8 @@
 #include "rc_codec.h"
 #include "model.h"
 
-/* Размер блока для прогресса. Энкодер работает по полной in-памяти,
-   но прогресс печатается блоками по 16KB — симметрично декодеру. */
+/* Progress block size. The encoder works entirely in-memory, but progress is
+   printed in 16KB blocks — symmetric to the decoder. */
 #define PROGRESS_BLOCK (16 * 1024)
 
 int main(int argc, char **argv) {
@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* --- Чтение входного файла (вне замера) --- */
+    /* --- Reading the input file (outside the measurement) --- */
     zpl_file fin;
     if (zpl_file_open(&fin, argv[1])) {
         fprintf(stderr, "fopen input\n");
@@ -71,7 +71,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Чтение потенциально большего файла чанками, как в декодере. */
+    /* Reading a potentially large file in chunks, like the decoder. */
     {
         uint8_t *p = data;
         int64_t remaining = (int64_t)n;
@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
     }
     zpl_file_close(&fin);
 
-    /* --- Подсчёт частот (вне замера — это часть модели) --- */
+    /* --- Frequency counting (outside the measurement — part of the model) --- */
     uint32_t raw_freq[ALPHABET];
     memset(raw_freq, 0, sizeof(raw_freq));
     for (size_t i = 0; i < n; i++) raw_freq[data[i]]++;
@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* --- Открытие выходного файла и запись заголовка (вне замера) --- */
+    /* --- Opening the output file and writing the header (outside the measurement) --- */
     zpl_file fout;
     if (zpl_file_create(&fout, argv[2])) {
         fprintf(stderr, "fopen output\n");
@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Калибровка частоты CPU (как в декодере) --- */
+    /* --- CPU frequency calibration (like in the decoder) --- */
     zpl_u64 t0xx = zpl_time_rel_ms() + 100;
     zpl_u64 dddd = zpl_rdtsc();
     while (zpl_time_rel_ms() < t0xx);
@@ -139,13 +139,13 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* --- RC mode: запись кумулятивных частот cum[1..256] (вне замера) --- */
+    /* --- RC mode: writing cumulative frequencies cum[1..256] (outside the measurement) --- */
     if (!zpl_file_write(&fout, m + 1, sizeof(m[0]) * ALPHABET)) {
         fprintf(stderr, "write cum\n");
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Выделение буфера потока --- */
+    /* --- Allocating the stream buffer --- */
     size_t buf_words = (size_t)(n / 4 + n / 200 + 1024);
     uint32_t *buf = (uint32_t *)malloc(buf_words * sizeof(uint32_t));
     if (!buf) {
@@ -153,9 +153,9 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
-    /* --- Кодирование (inplace — структура сама пишет в buf через out_ptr).
-       Замер: только цикл кодирования. Прогресс печатается по блокам 16KB,
-       как в декодере. Внутри блока — чистый rdtsc, без I/O. --- */
+    /* --- Encoding (inplace — the struct writes into buf itself via out_ptr).
+       Measurement: only the encoding loop. Progress is printed in 16KB blocks,
+       like in the decoder. Inside a block — pure rdtsc, no I/O. --- */
     rc_enc_t rc;
     rc_enc_init(&rc, buf, buf_words);
 
@@ -175,14 +175,14 @@ int main(int argc, char **argv) {
                (uint64_t)i, n, 100.0 * (double)i / (double)n);
         fflush(stdout);
     }
-    /* flush — это ~2 слова, замеряем вместе с последним блоком не нужно,
-       он не относится к per-symbol hot loop. Делаем вне замера. */
+    /* flush is ~2 words; no need to measure it together with the last block,
+       it is not part of the per-symbol hot loop. Done outside the measurement. */
     rc_enc_flush(&rc);
     printf("\n");
 
     size_t nwords = (size_t)(rc.out_ptr - buf);
 
-    /* --- Запись потока (вне замера) --- */
+    /* --- Writing the stream (outside the measurement) --- */
     if (!zpl_file_write(&fout, buf, sizeof(buf[0]) * nwords)) {
         fprintf(stderr, "write word\n");
         free(buf); zpl_file_close(&fout); free(data); return 1;
@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
     free(buf);
     free(data);
 
-    /* --- Отчёт --- */
+    /* --- Report --- */
     uint32_t ticks_per_symbol = (n > 0) ? (uint32_t)(total_ticks / n) : 0;
     uint64_t total_enc_time_ms = (zpl_rdtsc_freq > 0)
         ? (uint64_t)(total_ticks * 1000 / zpl_rdtsc_freq)

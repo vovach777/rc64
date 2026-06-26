@@ -2,17 +2,17 @@
  * rANS64 — Asymmetric Numeral System codec (64-bit state, 32-bit renorm)
  * =========================================================================
  *
- * Оригинальный код пользователя, без изменений логики.
- * 64-битный state, нижняя граница интервала нормализации RANS64_L = 2^31.
- * Renorm: emit 32-битное слово, state >>= 32 (encoder) / shift-in слова (decoder).
+ * Original user code, logic unchanged.
+ * 64-bit state, lower bound of the normalization interval RANS64_L = 2^31.
+ * Renorm: emit 32-bit word, state >>= 32 (encoder) / shift-in word (decoder).
  *
- * Используется со статической моделью model.h (TARGET_TOTAL = 2^14, scale_bits=14).
+ * Used with the static model in model.h (TARGET_TOTAL = 2^14, scale_bits=14).
  *
- * ПОТОК:
- *   Энкодер идёт по входу НАЗАД (rANS — LIFO), renorm-слова пишет ВПЕРЁД.
- *   flush() возвращает (HIGH32, LOW32) финального state — пишется в конец потока.
- *   Декодер читает flush-пару с конца, Init (с обменом first/second — см. ниже),
- *   идёт по потоку ВПЕРЁД, renorm-слова потребляет с конца буфера НАЗАД.
+ * STREAM:
+ *   Encoder walks the input BACKWARDS (rANS is LIFO), writes renorm words FORWARDS.
+ *   flush() returns (HIGH32, LOW32) of the final state — written at the end of the stream.
+ *   Decoder reads the flush-pair from the end, Init (with first/second swapped — see below),
+ *   walks the stream FORWARDS, consumes renorm words from the end of the buffer BACKWARDS.
  * ========================================================================= */
 
 #ifndef RANS_CODEC_H

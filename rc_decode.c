@@ -1,10 +1,10 @@
 /* =========================================================================
- * RC DECODE v2 — полный буфер в память, buffered output
+ * RC DECODE v2 — whole buffer in memory, buffered output
  * =========================================================================
  *
- * Сжатый поток целиком грузится в память (random access, быстро).
- * Вывод через статический буфер 16KB, сброс на диск порциями.
- * Во время сброса таймер выключен.
+ * The compressed stream is loaded entirely into memory (random access, fast).
+ * Output goes through a static 16KB buffer, flushed to disk in chunks.
+ * The timer is off during flushes.
  *
  * Usage:
  *   rc_decode <input_file.rc> <output_file> [original_file]
@@ -21,7 +21,7 @@
 #include "rc_codec.h"
 #include "model.h"
 
-#define OUT_BUF_SIZE (16 * 1024)  /* 16KB выходной буфер */
+#define OUT_BUF_SIZE (16 * 1024)  /* 16KB output buffer */
 
 
 int main(int argc, char **argv) {
@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     if (err) { perror("fopen input"); return err; }
 
 
-    /* Заголовок */
+    /* Header */
     uint8_t sig[4];
 
     if (zpl_file_read(&fin,sig,sizeof(sig)) != 1) {
@@ -76,12 +76,12 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* RC mode: чтение кумулятивных частот cum[1..256] */
+    /* RC mode: reading cumulative frequencies cum[1..256] */
     cums_t m = {0};
     zpl_file_read(&fin, m + 1, sizeof(m[0]) * ALPHABET);
     zpl_i64 ac_data_len = (zpl_file_size(&fin) - 524);
 
-    /* LUT строится один раз по готовой таблице cums (если не DISABLE_LUT) */
+    /* LUT is built once from the finished cums table (unless DISABLE_LUT) */
     lut_t lut;
     model_build_lut(lut, m);
 
@@ -116,9 +116,9 @@ int main(int argc, char **argv) {
         perror("fopen output"); free(words); return 1;
     }
 
-    /* Декодирование — чистый замер.
-       Декодер пишет в out[] (в памяти). Сброс на диск порциями 16KB
-       через статический буфер, во время сброса таймер выключен. */
+    /* Decoding — pure measurement.
+       The decoder writes into out[] (in memory). Flushing to disk in 16KB
+       chunks through a static buffer; the timer is off during flushes. */
     uint32_t* words_p = words;
     rc_dec_t rd;
     words_p += rc_dec_init(&rd, words_p);

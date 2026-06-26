@@ -1,9 +1,9 @@
 /* =========================================================================
- * TIMER — кроссплатформенный, int64 тики
+ * TIMER — cross-platform, int64 ticks
  * =========================================================================
  *
- * int64_t timer_ticks(void)  — текущее значение счётчика
- * int64_t timer_freq(void)   — тиков в секунду
+ * int64_t timer_ticks(void)  — current counter value
+ * int64_t timer_freq(void)   — ticks per second
  * elapsed_ms = (t1 - t0) * 1000 / freq
  * ========================================================================= */
 
@@ -33,7 +33,7 @@ static inline int64_t timer_ticks(void) {
 #include <time.h>
 
 static inline int64_t timer_freq(void) {
-    return 1000000000LL;  /* CLOCK_MONOTONIC = наносекунды */
+    return 1000000000LL;  /* CLOCK_MONOTONIC = nanoseconds */
 }
 
 static inline int64_t timer_ticks(void) {

@@ -1,33 +1,35 @@
 /* =========================================================================
- * RANS DECODE — 64-bit rANS, 14-битная статическая модель
+ * RANS DECODE — 64-bit rANS, 14-bit static model
  * =========================================================================
  *
- * Декодер грузит весь renorm-поток в память (malloc), затем идёт по блокам
- * ВПЕРЁД указателем words_p. renorm внутри блока читается ВПЕРЁД по факту
- * потребления (энкодер перевернул буфер); число renorm-слов блока НЕ хранится —
- * после декодирования block_syms символов указатель сам встаёт на flush-пару
- * следующего блока (зеркальность rANS: кодировщик эмиттит K ⟺ декодер потребляет K).
+ * The decoder loads the entire renorm stream into memory (malloc), then walks
+ * the blocks FORWARD with the words_p pointer. renorm within a block is read
+ * FORWARD as it is consumed (the encoder flipped the buffer); the number of
+ * renorm words per block is NOT stored — after decoding block_syms symbols the
+ * pointer lands on the next block's flush pair by itself (rANS symmetry: encoder
+ * emits K ⟺ decoder consumes K).
  *
  * Usage:
  *   rans_decode <input_file.rans> <output_file>
  *
- * Поток .rans (см. rans_encode.cpp):
+ * .rans stream (see rans_encode.cpp):
  *   [4]    sig 'r','n', flags, rle_sym
  *   [8]    uint64_t original_len (LE)
  *   [512]  cum[1..256] uint16_t LE
- *   далее подряд блоки:
- *     [4]    uint32_t flush_lo  = LOW32  state блока (LE)
- *     [4]    uint32_t flush_hi  = HIGH32 state блока (LE)
- *     [4*K]  renorm uint32_t LE — В ПОРЯДКЕ ПОТРЕБЛЕНИЯ (читаем ВПЕРЁД)
+ *   then consecutive blocks:
+ *     [4]    uint32_t flush_lo  = LOW32  of the block's state (LE)
+ *     [4]    uint32_t flush_hi  = HIGH32 of the block's state (LE)
+ *     [4*K]  renorm uint32_t LE — IN CONSUMPTION ORDER (read FORWARD)
  *
- * Размер блока по ВХОДУ фиксирован (BLOCK_BYTES), поэтому число символов блока
- * декодер знает сам: min(BLOCK_BYTES, orig_len − уже_декодировано). sym_count
- * в потоке не хранится.
+ * The INPUT block size is fixed (BLOCK_BYTES), so the decoder knows the number
+ * of symbols per block itself: min(BLOCK_BYTES, orig_len − already_decoded).
+ * sym_count is not stored in the stream.
  *
- * Декодер:
- *   - читает flush-пару блока [flush_lo][flush_hi] (заголовка/renorm_count НЕТ),
- *   - Init({flush_lo, flush_hi}) (с обменом, как и раньше) → исходный state,
- *   - ест renorm ВПЕРЁД по потреблению (words_p += Rans64Dec(...)), идёт по выходу ВПЕРЁД.
+ * Decoder:
+ *   - reads the block's flush pair [flush_lo][flush_hi] (NO header/renorm_count),
+ *   - Init({flush_lo, flush_hi}) (with a swap, as before) → the initial state,
+ *   - consumes renorm FORWARD as needed (words_p += Rans64Dec(...)), walks the
+ *     output FORWARD.
  * ========================================================================= */
 
 #include <cstdio>
@@ -44,8 +46,8 @@
 #include "model.h"
 
 #define RANS_SCALE_BITS  14u
-#define BLOCK_BYTES      (256 * 1024)   /* фикс. размер блока ВХОДА (как у энкодера) */
-/* Потолок renorm-слов на блок = BLOCK_BYTES*14/32 + запас (см. rans_encode.cpp). */
+#define BLOCK_BYTES      (256 * 1024)   /* fixed INPUT block size (same as encoder) */
+/* Ceiling of renorm words per block = BLOCK_BYTES*14/32 + slack (see rans_encode.cpp). */
 #define RENORM_BUF_WORDS (BLOCK_BYTES * 14u / 32u + 1024)
 #define OUT_BUF_SIZE     (16 * 1024)
 
@@ -60,7 +62,7 @@ int main(int argc, char **argv) {
     zpl_file_error err = zpl_file_open(&fin, argv[1]);
     if (err) { perror("fopen input"); return err; }
 
-    /* --- Заголовок --- */
+    /* --- Header --- */
     uint8_t sig[4];
     if (!zpl_file_read(&fin, sig, sizeof(sig))) {
         fprintf(stderr, "read sig\n");
@@ -112,7 +114,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* --- rANS mode: чтение cum[1..256] --- */
+    /* --- rANS mode: reading cum[1..256] --- */
     cums_t m = {0};
     if (!zpl_file_read(&fin, m + 1, sizeof(m[0]) * ALPHABET)) {
         fprintf(stderr, "read cum\n");
@@ -123,7 +125,7 @@ int main(int argc, char **argv) {
     lut_t lut;
     model_build_lut(lut, m);
 
-    /* Калибровка CPU */
+    /* CPU calibration */
     zpl_u64 t0xx = zpl_time_rel_ms() + 100;
     zpl_u64 dddd = zpl_rdtsc();
     while (zpl_time_rel_ms() < t0xx);
@@ -166,7 +168,7 @@ int main(int argc, char **argv) {
     }
 
     zpl_u64 total_ticks = 0;
-    size_t i = 0;   /* выдано байт */
+    size_t i = 0;   /* bytes emitted */
 
     auto words_p = words;
 
@@ -174,8 +176,8 @@ int main(int argc, char **argv) {
         size_t block_syms = zpl_min(n - i, (size_t)BLOCK_BYTES);
 
 
-        /* Init({flush_lo, flush_hi}) строит state = flush_lo | (flush_hi<<32)
-           = (HIGH<<32) | LOW = исходный финальный state блока. */
+        /* Init({flush_lo, flush_hi}) builds state = flush_lo | (flush_hi<<32)
+           = (HIGH<<32) | LOW = the block's original final state. */
         rANS::Decoder dec;
         dec.Init({words_p[0], words_p[1]});
         words_p += 2;
