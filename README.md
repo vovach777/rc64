@@ -81,15 +81,26 @@ If a frequency is > 0 but scaled = 0, it is raised to 1.
 The sum is corrected back to 16384 via the maximum frequency.
 RLE is used when only one symbol is active.
 
-## Results (enwik9, 1 GB, O3, clang x86_64)
+## Results — enwik9 (1 GB), all engines, O3, clang, x86_64
 
-```
-input:      1,000,000,000 bytes
-output:       644,975,732 bytes (64.50%, 5.160 bpb)
-encode:         3.7 sec (258.7 MB/s)
-decode:        32.2 sec  (29.6 MB/s)  — pure timed region, I/O excluded
-roundtrip:   OK
-```
+Order-0 static models; roundtrip verified (`cmp`); timed region excludes I/O.
+
+| Engine | Model | Compressed | bpb | Encode | Decode | enc+dec |
+|---|---|---|---|---|---|---|
+| 64-bit RC (Schindler) | 14-bit | 644,975,728 (64.50%) | 5.160 | 211 MB/s (11 t/s) | 53.9 MB/s (45 t/s) | 22.6 s |
+| 32-bit RC | 12-bit | 648,568,754 (64.86%) | 5.189 | 181 MB/s (13 t/s) | 63.8 MB/s (37 t/s) | 20.2 s |
+| rANS (4-way interleave) | 14-bit | 645,067,056 (64.51%) | 5.161 | 149 MB/s (15 t/s) | **349 MB/s (6 t/s)** | **9.1 s** |
+
+- **Compression**: the 64-bit RC and rANS tie (~5.160 bpb, 14-bit model); the
+  32-bit RC trails (12-bit model → 5.189 bpb). rANS carries a small per-block
+  overhead (4 flush pairs/block × 3815 blocks ≈ 122 KB).
+- **Decode**: rANS with 4-way interleave decodes at **349 MB/s — 6.5× the 64-bit
+  RC decoder** (53.9 MB/s). The decoder is latency-bound, and the four
+  interleaved states hide the `mul`+renorm dependency chain.
+- **Encode**: the RC encoders are faster — the rANS encoder at N=4 pays the
+  rotation overhead (its own peak is N=2, but N is shared with the decoder).
+- **Net (enc+dec)**: rANS N=4 is **~2.5× faster end-to-end** than either RC
+  engine, because decode dominates and the rANS decoder is far faster.
 
 ### Decoder profile (assembly, 103 cycles/symbol)
 
