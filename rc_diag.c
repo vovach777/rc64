@@ -221,7 +221,7 @@ int main(int argc, char **argv) {
     printf("--- ВХОД ---\n");
     printf("  file:          %s\n", argv[1]);
     printf("  size:          %zu bytes (%.1f MB)\n", n, (double)n / (1048576.0));
-    printf("  symbols:       %zu\n", st.total_symbols);
+    printf("  symbols:       %zu\n", (size_t)st.total_symbols);
     printf("  active bytes:  ");
     int active = 0;
     for (int i = 0; i < ALPHABET; i++) if (raw_freq[i] > 0) active++;
