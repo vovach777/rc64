@@ -16,6 +16,7 @@ make
 make roundtrip      # 64-bit engine (14-bit model, uint32_t words)
 make roundtrip32    # 32-bit engine (12-bit model, uint16_t words)
 make roundtrip_rans # rANS engine (64-bit state, 32-bit renorm, 14-bit model)
+make bench_rans     # rANS N-way interleave benchmark (enc+dec, N=1..5)
 ```
 
 ## Usage
@@ -142,6 +143,9 @@ The subbotin_magic branch — Subbotin aligned trim instead of carry propagation
 | `roundtrip.sh` | Roundtrip tests for the 64-bit range coder. |
 | `roundtrip32.sh` | Roundtrip tests for the 32-bit engine. |
 | `roundtrip_rans.sh` | Roundtrip tests for the rANS engine. |
+| `bench_enc.cpp` | rANS N-way interleave ENCODE benchmark (compile-time `-DNINTER=n`). |
+| `bench_dec.cpp` | rANS N-way interleave DECODE benchmark (`-DNINTER=n`, verifies output). |
+| `bench_rans.sh` | Runs the enc+dec benchmark for N=1..5 and prints a throughput table. |
 
 ## 32-bit engine (rc_codec_32.h)
 
@@ -177,12 +181,13 @@ match the `.rc` family (524-byte header, signature `'r','n'`).
 
 The design goal is to push all reversing onto the encoder so the decoder does a
 single forward pass. The input is split into fixed-size independent blocks
-(BLOCK_BYTES = 256 KB). Each block is an **independent** rANS: a fresh
-`state = RANS64_L` at the start and its own flush pair at the end — state is not
-carried across blocks.
+(BLOCK_BYTES = 256 KB). Each block is an **independent** 4-way interleaved rANS:
+four fresh `state = RANS64_L` at the start and its own 4 flush pairs at the end
+— states are not carried across blocks.
 
 - The encoder walks blocks FORWARD and, within each block, walks the input
-  BACKWARD (rANS is LIFO).
+  BACKWARD (rANS is LIFO), round-robining four encoder states by position
+  (state = k & 3).
 - The block's renorm words are written into a static buffer FROM THE END
   (`buf[--buf_head]`), so they land already in decoder-consumption order — no
   separate buffer flip step.
@@ -204,14 +209,15 @@ carried across blocks.
 --- rANS mode (is_rle=0) ---
 [512 bytes] cum[1..256] — uint16_t LE (cumulative frequencies, 14-bit)
             cum[0]=0 is not stored (always a constant)
-then consecutive blocks (fixed INPUT size BLOCK_BYTES = 256 KB):
-  [4 bytes]  uint32_t flush_lo = LOW32  of the block's final state (LE)
-  [4 bytes]  uint32_t flush_hi = HIGH32 of the block's final state (LE)
+then consecutive blocks (fixed INPUT size BLOCK_BYTES = 256 KB), 4-WAY
+INTERLEAVED (four independent rANS states per block):
+  [4*8 bytes] 8 uint32 flush words = 4 flush pairs (one per state s0..s3),
+              forward order [s0.lo,s0.hi, s1.lo,s1.hi, s2.lo,s2.hi, s3.lo,s3.hi] (LE)
   [4*K]      uint32_t renorm words of the block, in decoder-consumption order
              (read FORWARD)
   (K is NOT stored — the decoder consumes renorm inline and, after
    block_syms = min(BLOCK_BYTES, orig_len − already_decoded) symbols,
-   arrives at the next flush pair by rANS symmetry.)
+   arrives at the next flush-pair group by rANS symmetry.)
 ```
 
 Header: 4 + 8 + 512 = 524 bytes (same as `.rc` / `.rc32`).
@@ -240,9 +246,53 @@ full block stays around 8 bpb (rc ≈ 65536).
 ### Decoder
 
 The decoder loads the whole renorm stream into memory once, then walks blocks
-FORWARD with a `words_p` pointer. For each block it reads the flush pair
-(`Init({flush_lo, flush_hi})` reconstructs the block's final state), then
-decodes `block_syms` symbols, advancing `words_p` inline via
-`words_p += dec.Rans64Dec(cum_lo, freq, scale_bits, *words_p)` — the decoder
-advances exactly when a renorm word is consumed, so it lands on the next flush
-pair with no stored count.
+FORWARD with a `words_p` pointer. For each block it reads the 4 flush pairs
+(`Init({lo, hi})` reconstructs each of the four interleaved states), then
+decodes `block_syms` symbols round-robining the four states, advancing
+`words_p` inline via `words_p += dec.Rans64Dec(cum_lo, freq, scale_bits,
+*words_p)` — the decoder advances exactly when a renorm word is consumed, so it
+lands on the next flush-pair group with no stored count.
+
+### N-way interleave (state rotation)
+
+Each symbol's step depends on the previous one through `state`, forming a long
+dependency chain (the reciprocal `mul` on encode; `freq*(state>>scale)` plus the
+serial renorm shift-in `state=(state<<32)|next` on decode). Interleaving N
+independent states and round-robining them by position (`state = k & (N−1)`)
+runs N chains in parallel, hiding that latency.
+
+Two implementation notes:
+
+- **Rotation, not indexing.** The states are held in a register-resident array
+  and *rotated* each step (`e[N-1]=e[N-2]; …; e[0]=active`) rather than indexed
+  as `e[k & (N-1)]`. A runtime-indexed access forces the array onto the stack
+  (a load+store per state reference), whereas the rotation compiles to
+  zero-latency register-to-register `mov`s — empirically, `e[k&1]` spills to L1
+  while the rotation keeps both (and up to ~5) states in GPRs.
+- **Register ceiling.** x86-64 has 16 GPRs; the encode/decode loops consume
+  ~10 for their other live values, leaving ~5 for states. So N≤5 stays in
+  registers; N=6 spills. In the production (loop inlined into `main`) the real
+  ceiling is ~4.
+
+Encoder and decoder peak at *different* N (measured, min of 5 runs, 32 MB
+"english", `-O3 clang`, `bench_rans.sh`):
+
+| N | enc t/sym | dec t/sym | enc+dec |
+|---|---|---|---|
+| 1 | 12.75 | 17.77 | 30.52 |
+| 2 | **9.96** |  9.90 | 19.86 |
+| 3 | 10.50 |  9.78 | 20.28 |
+| 4 | 11.01 | **6.93** | **17.94** |
+| 5 | 13.02 |  8.32 | 21.34 |
+
+- The **encoder** is throughput-bound: 2-way ILP already hides the reciprocal
+  `mul`, so it peaks at N=2 and degrades after (N−1 rotation moves/symbol +
+  `buf_head` contention).
+- The **decoder** is latency-bound, so it keeps improving to N=4 (−30% vs N=2);
+  N=5 spills and regresses.
+
+N is shared by the stream format (N flush pairs per block), so it is a
+compromise. **N=4 is hardcoded** in the production codec: best combined
+throughput (decoder's −3 t/sym outweighs the encoder's +1) and the decoder's
+peak. Switch to N=2 for encode-heavy workloads (the `bench_enc`/`bench_dec`
+tools are parameterized via `-DNINTER=n` to re-measure any N).

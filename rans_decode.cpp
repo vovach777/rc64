@@ -49,10 +49,10 @@
 #define BLOCK_BYTES      (256 * 1024)   /* fixed INPUT block size (same as encoder) */
 /* Ceiling of renorm words per block = BLOCK_BYTES*14/32 + slack (see rans_encode.cpp). */
 #define RENORM_BUF_WORDS (BLOCK_BYTES * 14u / 32u + 1024)
-#define OUT_BUF_SIZE     (16 * 1024)
+
 
 int main(int argc, char **argv) {
-    static uint8_t out_buf[OUT_BUF_SIZE];
+    static uint8_t out_buf[BLOCK_BYTES];
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <input.rans> <output>\n", argv[0]);
         return 1;
@@ -98,10 +98,10 @@ int main(int argc, char **argv) {
         zpl_file_close(&fin);
         zpl_file fout;
         if (zpl_file_create(&fout, argv[2])) { perror("fopen output"); return 1; }
-        memset(out_buf, rle_sym, OUT_BUF_SIZE);
+        memset(out_buf, rle_sym, BLOCK_BYTES);
         size_t remaining = n;
         while (remaining > 0) {
-            size_t block = (remaining < OUT_BUF_SIZE) ? remaining : OUT_BUF_SIZE;
+            size_t block = (remaining < BLOCK_BYTES) ? remaining : BLOCK_BYTES;
             if (!zpl_file_write(&fout, out_buf, block)) {
                 perror("fwrite error");
                 zpl_file_close(&fout);
@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
 
 
 
-    uint64_t rans_u32_len = (buf_words+1)*4;
+    uint64_t rans_u32_len = (buf_words+2)*4;
     uint32_t *words = (uint32_t *) malloc( rans_u32_len  );
     if ( words == NULL) {
         fprintf(stderr, "malloc words\n");
@@ -176,33 +176,37 @@ int main(int argc, char **argv) {
         size_t block_syms = zpl_min(n - i, (size_t)BLOCK_BYTES);
 
 
-        /* Init({flush_lo, flush_hi}) builds state = flush_lo | (flush_hi<<32)
-           = (HIGH<<32) | LOW = the block's original final state. */
-        rANS::Decoder dec;
-        dec.Init({words_p[0], words_p[1]});
-        words_p += 2;
+        /* Four interleaved states (matches the encoder's 4-way rotation).
+           Read 4 flush pairs forward: [s0.lo,s0.hi, s1.lo,s1.hi,
+           s2.lo,s2.hi, s3.lo,s3.hi] (the encoder pushed encs[3..0]). Each
+           Init({lo,hi}) rebuilds state = lo | (hi<<32). */
+        rANS::Decoder decs[4];
+        decs[0].Init({words_p[0], words_p[1]});
+        decs[1].Init({words_p[2], words_p[3]});
+        decs[2].Init({words_p[4], words_p[5]});
+        decs[3].Init({words_p[6], words_p[7]});
+        words_p += 8;
 
-        size_t block_done = 0;
-        while (block_done < block_syms) {
-            size_t out_block = zpl_min(block_syms - block_done, (size_t)OUT_BUF_SIZE);
-            zpl_u64 t0 = zpl_rdtsc();
-            for (size_t k = 0; k < out_block; k++) {
-                uint32_t cum = dec.Rans64DecGet(RANS_SCALE_BITS);
-                uint16_t cum_lo, freq;
-                uint8_t sym = model_find_lut(lut, m, (uint16_t)cum, &cum_lo, &freq);
-                words_p += dec.Rans64Dec(cum_lo, freq, RANS_SCALE_BITS, *words_p);
-                out_buf[k] = sym;
-            }
-            total_ticks += zpl_rdtsc() - t0;
-            if (!zpl_file_write(&fout, out_buf, out_block)) {
-                free(words);
-                perror("fwrite error");
-                zpl_file_close(&fout);
-                return 1;
-            }
-            block_done += out_block;
+        zpl_u64 t0 = zpl_rdtsc();
+        for (size_t k = 0; k < block_syms; k++) {
+            auto dec = decs[0];
+            uint32_t cum = dec.Rans64DecGet(RANS_SCALE_BITS);
+            uint16_t cum_lo, freq;
+            uint8_t sym = model_find_lut(lut, m, (uint16_t)cum, &cum_lo, &freq);
+            words_p += dec.Rans64Dec(cum_lo, freq, RANS_SCALE_BITS, *words_p);
+            out_buf[k] = sym;
+            decs[0] = decs[1];
+            decs[1] = decs[2];
+            decs[2] = decs[3];
+            decs[3] = dec;
         }
-
+        total_ticks += zpl_rdtsc() - t0;
+        if (!zpl_file_write(&fout, out_buf, block_syms)) {
+            free(words);
+            perror("fwrite error");
+            zpl_file_close(&fout);
+            return 1;
+        }
         i += block_syms;
         printf("\r                      \r%zu / %zu  (%3.1f%%)",
                i, n, 100.0 * (double)i / (double)n);

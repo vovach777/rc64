@@ -16,14 +16,15 @@
  *   --- rANS mode (is_rle=0) ---
  *   [512 bytes] cum[1..256] — uint16_t LE (cumulative frequencies, 14-bit)
  *              cum[0]=0 is not stored (always a constant)
- *   then consecutive blocks (fixed INPUT size BLOCK_BYTES):
- *     [4 bytes]  uint32_t flush_lo  = LOW32  of the block's final state (LE)
- *     [4 bytes]  uint32_t flush_hi  = HIGH32 of the block's final state (LE)
+ *   then consecutive blocks (fixed INPUT size BLOCK_BYTES), 4-WAY INTERLEAVED:
+ *     [4*8 bytes] 8 uint32 flush words = 4 flush pairs (one per interleaved
+ *                state s0..s3), laid out forward as
+ *                [s0.lo,s0.hi, s1.lo,s1.hi, s2.lo,s2.hi, s3.lo,s3.hi] (LE)
  *     [4*K]      uint32_t renorm words of the block, REVERSED (in the order the
  *                decoder consumes them) — the decoder reads them FORWARD
  *   The number of renorm words per block (K) IS NOT STORED IN THE STREAM — the
  *   decoder consumes them inline as needed and after block_syms symbols arrives
- *   at the next flush pair by itself.
+ *   at the next flush-pair group by itself.
  *
  * Header: 4 + 8 + 512 = 524 bytes (same as .rc / .rc32).
  *
@@ -178,7 +179,6 @@ int main(int argc, char **argv) {
 
     /* --- Encoding: FORWARD pass over blocks, BACKWARD within a block (LIFO).
        Timed: only the Rans64EncPut loop, excluding I/O and the flip. --- */
-    rANS::Encoder enc;
     zpl_u64 total_ticks = 0;
     size_t total_renorm = 0;
     size_t blocks = 0;
@@ -186,27 +186,38 @@ int main(int argc, char **argv) {
     auto remaining = n;
 
     while (remaining) {
-        enc = rANS::Encoder{};   /* fresh independent state = RANS64_L */
+        /* 4-way interleaved rANS: four independent states, round-robin by
+           position (state = k & 3). The decoder is latency-bound, so deeper
+           interleave helps it a lot (see the N-interleave benchmark in the
+           README); the encoder breaks even past N=2 but the shared N must
+           match. States are ROTATED (not indexed) so all four stay in GPRs. */
+        rANS::Encoder encs[4]{};   /* fresh independent states = RANS64_L */
         const size_t block_syms = zpl_min((size_t)BLOCK_BYTES, remaining);
         auto buf_head = buf +  RENORM_BUF_WORDS;
         zpl_u64 t0 = zpl_rdtsc();
         for (int k=block_syms-1; k >= 0; --k) {
+            auto enc = encs[3];
             uint16_t cum_lo, freq;
             model_get(m, data[i+k], &cum_lo, &freq);
             auto res = enc.Rans64EncPut_no_div(cum_lo, freq, rfreq_tab[data[i+k]], RANS_SCALE_BITS);
             if (res) {
                 assert(buf_head > buf+16 && "renorm buffer overflow");
-                // if (buf_head == 0) {
-                //     fprintf(stderr, "renorm buffer overflow\n");
-                //     zpl_file_close(&fout); free(data); return 1;
-                // }
                 *(--buf_head) = *res;
             }
+            encs[3] = encs[2];
+            encs[2] = encs[1];
+            encs[1] = encs[0];
+            encs[0] = enc;
         }
         total_ticks += zpl_rdtsc() - t0;
-        auto flush_pair = enc.flush();
-        *(--buf_head) = flush_pair.first;
-        *(--buf_head) = flush_pair.second;
+        /* Flush all 4 states. Push encs[3..0] so reading the buffer FORWARD
+           gives [s0.lo,s0.hi, s1.lo,s1.hi, s2.lo,s2.hi, s3.lo,s3.hi, renorm...]
+           — the order the decoder Inits its four states. */
+        for (int s = 3; s >= 0; --s) {
+            auto flush_pair = encs[s].flush();
+            *(--buf_head) = flush_pair.first;
+            *(--buf_head) = flush_pair.second;
+        }
 
         i += block_syms;
         remaining -= block_syms;

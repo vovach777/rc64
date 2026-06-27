@@ -74,6 +74,25 @@ if(MATH_LIBRARY)
     target_link_libraries(rans_decode ${MATH_LIBRARY})
 endif()
 
+# --- rANS interleave benchmark (bench_enc/bench_dec, N-way via -DNINTER=n) ---
+add_executable(bench_enc bench_enc.cpp)
+if(MATH_LIBRARY)
+    target_link_libraries(bench_enc ${MATH_LIBRARY})
+endif()
+
+add_executable(bench_dec bench_dec.cpp)
+if(MATH_LIBRARY)
+    target_link_libraries(bench_dec ${MATH_LIBRARY})
+endif()
+
+# --- rANS N-way interleave benchmark (enc+dec throughput vs N=1..5) ---
+add_custom_target(bench_rans
+    COMMAND sh ${CMAKE_SOURCE_DIR}/bench_rans.sh ${CMAKE_BINARY_DIR}
+    DEPENDS gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "rANS N-way interleave benchmark (N=1..5, min of 5 runs)"
+)
+
 # --- Roundtrip test ---
 add_custom_target(roundtrip
     COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip.sh ${CMAKE_BINARY_DIR}
