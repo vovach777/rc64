@@ -129,6 +129,20 @@ static inline void model_get(const cums_t m, uint8_t sym,
     *freq  = m[sym + 1] - m[sym];
 }
 
+/* Per-symbol 64-bit reciprocal table for the division-free rANS encoder.
+   rf[sym] = floor((2^64 - 1) / freq(sym)). With this magic number,
+   (state * rf[sym]) >> 64  ==  state / freq  or  state / freq - 1,
+   so the encoder needs at most one correction (see Rans64EncPut_no_div).
+   Built once after model_build(); unused for RLE. */
+typedef uint64_t rfreq_tab_t[ALPHABET];
+
+static inline void model_build_rfreq(rfreq_tab_t rf, const cums_t m) {
+    for (int i = 0; i < ALPHABET; i++) {
+        uint16_t freq = (uint16_t)(m[i + 1] - m[i]);
+        rf[i] = (freq == 0) ? 0 : (uint64_t)(0xFFFFFFFFFFFFFFFFULL / freq);
+    }
+}
+
 /* Find the symbol by cumulative value cum (for the decoder).
    LUT version — O(1) direct read. */
 static inline uint8_t model_find_lut(const lut_t lut, const cums_t m,

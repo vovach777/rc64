@@ -167,6 +167,10 @@ int main(int argc, char **argv) {
         zpl_file_close(&fout); free(data); return 1;
     }
 
+    /* --- Division-free encoder: precompute the 64-bit reciprocal per symbol. */
+    rfreq_tab_t rfreq_tab;
+    model_build_rfreq(rfreq_tab, m);
+
     /* --- renorm buffer for ONE block (reused). Size is fixed — the proven
        ceiling of renorm words per block (see RENORM_BUF_WORDS), hence
        static: no malloc/free, lives in BSS. --- */
@@ -189,7 +193,7 @@ int main(int argc, char **argv) {
         for (int k=block_syms-1; k >= 0; --k) {
             uint16_t cum_lo, freq;
             model_get(m, data[i+k], &cum_lo, &freq);
-            auto res = enc.Rans64EncPut(cum_lo, freq, RANS_SCALE_BITS);
+            auto res = enc.Rans64EncPut_no_div(cum_lo, freq, rfreq_tab[data[i+k]], RANS_SCALE_BITS);
             if (res) {
                 assert(buf_head > buf+16 && "renorm buffer overflow");
                 // if (buf_head == 0) {

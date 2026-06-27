@@ -52,6 +52,39 @@ namespace rANS
             state = ((state / freq) << scale_bits) + (state % freq) + start;
             return res;
         }
+
+        // Division-free encode. `rfreq` is the per-symbol 64-bit reciprocal
+        // floor((2^64 - 1) / freq), built once by model_build_rfreq().
+        //
+        // NOTE: this is a 64-bit-state coder, so the naive 32-bit trick
+        // (q = state * rfreq >> 32) is WRONG here — after renorm `state` can be
+        // up to ~2^63, so state*rfreq overflows uint64 and the quotient is lost.
+        // We use a 64-bit reciprocal and take the top 64 bits of the 128-bit
+        // product (a single `mul` on x86-64), which yields q == state/freq or
+        // state/freq - 1; the remainder is then corrected in one branch.
+        inline auto Rans64EncPut_no_div(uint32_t start, uint32_t freq, uint64_t rfreq, uint32_t scale_bits)
+        {
+            auto res = RansEncRenorm(freq, scale_bits);
+
+            // freq == 1: pure shift, no multiply. Rare on skewed data only.
+            if (freq == 1) [[unlikely]]
+            {
+                state = ((uint64_t)state << scale_bits) + start;
+            }
+            else
+            {
+                uint64_t q = (uint64_t)(((unsigned __int128)state * rfreq) >> 64);
+                uint64_t remainder = state - q * freq;
+                if (remainder >= freq) {
+                    remainder -= freq;
+                    q++;
+                }
+                q <<= scale_bits;
+                state = q + remainder + start;
+            }
+            return res;
+        }
+
         auto RansEncPutBits(uint32_t val, uint32_t nbits)
         {
             assert(nbits <= 16);
