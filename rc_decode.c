@@ -26,10 +26,11 @@
 
 int main(int argc, char **argv) {
     static uint8_t out_buf[OUT_BUF_SIZE];
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input.rc> <output>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <input.rc> <output> [no_progress]\n", argv[0]);
         return 1;
     }
+    int no_progress = (argc == 4 && strcmp(argv[3], "no_progress") == 0);
 
 
     zpl_file fin;
@@ -144,9 +145,11 @@ int main(int argc, char **argv) {
         if ( zpl_file_write(&fin, out_buf, block_size) != 1 ) {
             perror("fwrite error"); zpl_file_close(&fin); free(words); return 1;
         }
-        printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)", i + 1, n, 100.0 * (i + 1) / n);
+        if (!no_progress) {
+            printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)", i + 1, n, 100.0 * (i + 1) / n);
+        }
     }
-    printf("\n");
+    if (!no_progress) printf("\n");
     uint32_t ticks_per_symbol = total_ticks / n;
     uint64_t total_dec_time = total_ticks*1000 / zpl_rdtsc_freq;
 
@@ -154,9 +157,11 @@ int main(int argc, char **argv) {
     zpl_file_close(&fin);
     free(words);
 
-    printf("DECODE v2 OK\n");
-    printf("  decode:  %" PRIu64 " ms  (%.1f MB/s)\n", total_dec_time, n * ( 1. / 1024.0 ) * (1. / total_dec_time));
-    printf("        :  %u  ticks per symbol\n", ticks_per_symbol);
-    printf("  memory:  %.2f MB\n", (float)ac_u32_len / (1024.0f * 1024.0f / 4));
+    printf("DECODE-RC OK\n");
+    printf("  engine    : 64-bit Schindler range coder, 14-bit model\n");
+    printf("  decode_ms : %" PRIu64 "\n", total_dec_time);
+    printf("  decode_mbs: %.1f\n", (double)n * (1. / 1048576.0) * (1000.0 / (double)total_dec_time));
+    printf("  dec_ticks : %u\n", ticks_per_symbol);
+    printf("  memory_mb : %.2f\n", (float)ac_u32_len / (1024.0f * 1024.0f / 4));
     return 0;
 }

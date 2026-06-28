@@ -53,10 +53,11 @@
 
 int main(int argc, char **argv) {
     static uint8_t out_buf[BLOCK_BYTES];
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input.rans> <output>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <input.rans> <output> [no_progress]\n", argv[0]);
         return 1;
     }
+    int no_progress = (argc == 4 && strcmp(argv[3], "no_progress") == 0);
 
     zpl_file fin;
     zpl_file_error err = zpl_file_open(&fin, argv[1]);
@@ -208,11 +209,13 @@ int main(int argc, char **argv) {
             return 1;
         }
         i += block_syms;
-        printf("\r                      \r%zu / %zu  (%3.1f%%)",
-               i, n, 100.0 * (double)i / (double)n);
-        fflush(stdout);
+        if (!no_progress) {
+            printf("\r                      \r%zu / %zu  (%3.1f%%)",
+                   i, n, 100.0 * (double)i / (double)n);
+            fflush(stdout);
+        }
     }
-    printf("\n");
+    if (!no_progress) printf("\n");
 
     uint32_t ticks_per_symbol = (n > 0) ? (uint32_t)(total_ticks / n) : 0;
     uint64_t total_dec_time_ms = (zpl_rdtsc_freq > 0)
@@ -226,10 +229,9 @@ int main(int argc, char **argv) {
     free(words);
 
     printf("DECODE-RANS OK\n");
-    printf("  engine:   64-bit rANS, 32-bit renorm, scale_bits=%u\n", RANS_SCALE_BITS);
-    printf("  decode:   %" PRIu64 " ms  (%.1f MB/s)\n", total_dec_time_ms, mb_s);
-    printf("          : %u ticks per symbol\n", ticks_per_symbol);
-    printf("  memory:   %.2f MB (block buffer only)\n",
-           (float)rans_u32_len / (1024.0f * 1024.0f));
+    printf("  engine    : 64-bit rANS, 32-bit renorm, scale_bits=%u, N=4\n", RANS_SCALE_BITS);
+    printf("  decode_ms : %" PRIu64 "\n", total_dec_time_ms);
+    printf("  decode_mbs: %.1f\n", mb_s);
+    printf("  dec_ticks : %u\n", ticks_per_symbol);
     return 0;
 }

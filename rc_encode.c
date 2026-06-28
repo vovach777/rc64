@@ -44,10 +44,11 @@
 #define PROGRESS_BLOCK (16 * 1024)
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input_file> <output_file>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <input_file> <output_file> [no_progress]\n", argv[0]);
         return 1;
     }
+    int no_progress = (argc == 4 && strcmp(argv[3], "no_progress") == 0);
 
     /* --- Reading the input file (outside the measurement) --- */
     zpl_file fin;
@@ -171,10 +172,13 @@ int main(int argc, char **argv) {
         }
         total_ticks += zpl_rdtsc() - t0;
         i += block;
-        printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
-               (uint64_t)i, n, 100.0 * (double)i / (double)n);
-        fflush(stdout);
+        if (!no_progress) {
+            printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
+                   (uint64_t)i, n, 100.0 * (double)i / (double)n);
+            fflush(stdout);
+        }
     }
+    if (!no_progress) printf("\n");
     /* flush is ~2 words; no need to measure it together with the last block,
        it is not part of the per-symbol hot loop. Done outside the measurement. */
     rc_enc_flush(&rc);
@@ -205,12 +209,15 @@ int main(int argc, char **argv) {
         ? (double)n / (total_enc_time_ms * 1048576.0 / 1000.0)
         : 0.0;
 
-    printf("ENCODE v2 OK\n");
-    printf("  input:   %s\n", argv[1]);
-    printf("  in_size:  %" PRIu64 " bytes\n", n);
-    printf("  out_size: %" PRIi64 " bytes\n", out_bytes);
-    printf("  ratio:   %.2f%%  (%.3f bits/byte)\n", ratio, bpb);
-    printf("  encode:  %" PRIu64 " ms  (%.1f MB/s)\n", total_enc_time_ms, mb_s);
-    printf("        :  %u  ticks per symbol\n", ticks_per_symbol);
+    printf("ENCODE-RC OK\n");
+    printf("  engine    : 64-bit Schindler range coder, 14-bit model\n");
+    printf("  input     : %s\n", argv[1]);
+    printf("  in_size   : %" PRIu64 " bytes\n", n);
+    printf("  out_size  : %" PRIi64 " bytes\n", out_bytes);
+    printf("  bpb       : %.3f\n", bpb);
+    printf("  ratio_pct : %.2f\n", ratio);
+    printf("  encode_ms : %" PRIu64 "\n", total_enc_time_ms);
+    printf("  encode_mbs: %.1f\n", mb_s);
+    printf("  enc_ticks : %u\n", ticks_per_symbol);
     return 0;
 }

@@ -16,6 +16,8 @@ make
 make roundtrip      # 64-bit engine (14-bit model, uint32_t words)
 make roundtrip32    # 32-bit engine (12-bit model, uint16_t words)
 make roundtrip_rans # rANS engine (64-bit state, 32-bit renorm, 14-bit model)
+make roundtrip_fse  # FSE engine (vendored tANS, 14-bit model, block scheme)
+make roundtrip_huf  # HUF engine (vendored Huff0, per-block table, 128 KB blocks)
 make bench_rans     # rANS N-way interleave benchmark (enc+dec, N=1..5)
 ```
 
@@ -41,6 +43,18 @@ make bench_rans     # rANS N-way interleave benchmark (enc+dec, N=1..5)
 ```
 ./rans_encode <input_file> <output_file.rans>
 ./rans_decode <input_file.rans> <output_file>
+```
+
+### FSE engine (vendored tANS, block scheme, 14-bit model)
+```
+./fse_encode <input_file> <output_file.fse>
+./fse_decode <input_file.fse> <output_file>
+```
+
+### HUF engine (vendored Huff0, per-block table, 128 KB blocks)
+```
+./huf_encode <input_file> <output_file.huf>
+./huf_decode <input_file.huf> <output_file>
 ```
 
 ### Roundtrip test (all 6 datasets)
@@ -83,24 +97,90 @@ RLE is used when only one symbol is active.
 
 ## Results — enwik9 (1 GB), all engines, O3, clang, x86_64
 
-Order-0 static models; roundtrip verified (`cmp`); timed region excludes I/O.
+Order-0 static models; roundtrip verified (`cmp`); in-memory core timing
+(I/O and model/table construction excluded); **median of 3–5 runs** (the min/max
+of past runs was noisy — first run is cold-cache/page-fault heavy on 1 GB, and
+the `rdtsc` frequency calibration jitters ±0.5% per run; the median is stable).
 
 | Engine | Model | Compressed | bpb | Encode | Decode | enc+dec |
 |---|---|---|---|---|---|---|
-| 64-bit RC (Schindler) | 14-bit | 644,975,728 (64.50%) | 5.160 | 211 MB/s (11 t/s) | 53.9 MB/s (45 t/s) | 22.6 s |
-| 32-bit RC | 12-bit | 648,568,754 (64.86%) | 5.189 | 181 MB/s (13 t/s) | 63.8 MB/s (37 t/s) | 20.2 s |
-| rANS (4-way interleave) | 14-bit | 645,067,056 (64.51%) | 5.161 | 149 MB/s (15 t/s) | **349 MB/s (6 t/s)** | **9.1 s** |
+| 64-bit RC (Schindler) | 14-bit | 644,975,728 (64.50%) | 5.160 | 250 MB/s (9 t/s) | 56 MB/s (42 t/s) | 21.9 s |
+| 32-bit RC | 12-bit | 648,568,754 (64.86%) | 5.189 | 204 MB/s (11 t/s) | 68 MB/s (35 t/s) | 19.6 s |
+| rANS (4-way interleave) | 14-bit | 645,067,056 (64.51%) | 5.161 | 200 MB/s (11 t/s) | **416 MB/s (5 t/s)** | 7.4 s |
+| FSE tANS (reference) | 14-bit | 644,780,828 (64.48%) | 5.158 | 372 MB/s (6 t/s) | 349 MB/s (6 t/s) | 5.6 s |
+| HUF / Huff0 (reference) | per-block | 646,646,919 (64.66%) | 5.173 | **569 MB/s (4 t/s)** | **651 MB/s (3 t/s)** | **3.3 s** |
 
-- **Compression**: the 64-bit RC and rANS tie (~5.160 bpb, 14-bit model); the
-  32-bit RC trails (12-bit model → 5.189 bpb). rANS carries a small per-block
-  overhead (4 flush pairs/block × 3815 blocks ≈ 122 KB).
-- **Decode**: rANS with 4-way interleave decodes at **349 MB/s — 6.5× the 64-bit
-  RC decoder** (53.9 MB/s). The decoder is latency-bound, and the four
-  interleaved states hide the `mul`+renorm dependency chain.
-- **Encode**: the RC encoders are faster — the rANS encoder at N=4 pays the
-  rotation overhead (its own peak is N=2, but N is shared with the decoder).
-- **Net (enc+dec)**: rANS N=4 is **~2.5× faster end-to-end** than either RC
-  engine, because decode dominates and the rANS decoder is far faster.
+**FSE** = `Cyan4973/FiniteStateEntropy` (the tANS used by zstd), vendored under
+`lib/` and built as the `fse_encode`/`fse_decode` tools, which mirror the rc64
+rANS scheme **exactly**: 256 KB blocks, one global order-0 model built over the
+whole file (untimed), and a `zpl_rdtsc()` timed per-block loop for both encode
+and decode — same block size, same model granularity, same measurement. tableLog
+raised from the default cap of 12 to **14** to match the rc64 14-bit model.
+FSE's decode runs **2-way interleaved** (`state1`/`state2`), so this is FSE's
+normal single-threaded path; multithreading is out of scope, interleave is kept
+(the X4/X6 paths belong to HUF/Huffman, not FSE).
+
+**HUF** (Huff0) is the Huffman coder from the same `lib/`, built as
+`huf_encode`/`huf_decode`. It uses the **high-level** `HUF_compress()` /
+`HUF_decompress()` API per 128 KB block (`HUF_BLOCKSIZE_MAX` — the largest block
+HUF accepts). Each block is self-contained: HUF builds its **own per-block**
+Huffman table inside the one timed `HUF_compress()` call (table construction is
+part of the measurement, by design — no tree extraction). Incompressible blocks
+(`HUF_compress` returns 0) are stored raw. zpl_rdtsc() timing per block, same as
+the others. The "4X" in Huff0 is **4 interleaved bitstreams within one thread**
+(ILP/SIMD), not OS threads — neither HUF nor FSE spawn threads.
+
+- **Measurement fairness**: the FSE and rANS numbers are now measured with the
+  *identical* scheme — 256 KB blocks, global model built once (untimed), in-core
+  per-block `zpl_rdtsc()` timing, I/O excluded. Same input, same 14-bit
+  precision. So this is a clean codec-vs-codec comparison (the earlier
+  block-vs-single-stream caveat no longer applies).
+- **Compression**: Huffman's integer code lengths cost ~0.015 bpb vs ANS — HUF
+  trails (5.173); FSE is best (5.158); rANS and 64-bit RC tie (~5.160); the
+  32-bit RC is worst (5.189, 12-bit model). Each codec pays a tiny per-block
+  framing cost.
+- **Encode**: HUF is fastest (table-driven, no division, 4 t/s), then FSE (6
+  t/s). The rANS encoder is the slowest of the ANS codecs — N=4 pays the
+  rotation overhead and the reciprocal `mul` (11 t/s; its encode peak is N=2 ≈
+  256 MB/s, but N is shared with the decoder).
+- **Decode**: **HUF is fastest (651 MB/s, 3 t/s)** — its table lookup is a pure
+  load, no arithmetic. **rANS N=4 is next (416 MB/s, 5 t/s)**, beating FSE's
+  2-way decode (349 MB/s, 6 t/s), and ~7× the RC decoders (56–68 MB/s).
+- **Net (enc+dec)**: HUF leads on raw speed but pays the Huffman ratio tax; FSE
+  is the best ANS speed/ratio balance; **rANS has a faster decoder than FSE at
+  equal 14-bit precision** and is ~2.9× faster end-to-end than either RC engine.
+
+## Block formats compared (rANS / FSE / HUF)
+
+All three ANS-family engines split the input into **fixed-size INPUT blocks**
+(256 KB for rANS/FSE, 128 KB for HUF — its `HUF_BLOCKSIZE_MAX`), so each codec
+knows the original block size (`min(BLOCK_BYTES, remaining)`) and **never stores
+it**. What differs is how the decoder locates the *compressed* boundary of each
+block and where the model lives.
+
+| | input block | model (frequency/table) | per-block compressed framing | how the decoder finds the next block |
+|---|---|---|---|---|
+| **rANS** (N=4) | 256 KB | **global** — `cum[1..256]` once in the 524-byte header | `4 flush pairs = 8 uint32` (lo,hi)×4 states, then `K` renorm words | **implicit, no length stored** — renorm words are interleaved with coding and self-delimiting via state; after `block_syms` symbols `words_p` lands on the next flush-pair group by rANS symmetry (emit K ⟺ consume K). The flush pairs are both the boundary marker and the final state for Init. |
+| **FSE** | 256 KB | **global** — `tableLog + maxSymbolValue + norm[256]` once in the header | `4-byte csize` + `csize`-byte bare FSE bitstream (no tree) | **explicit `csize`** — the block is one contiguous packed bitstream; the decoder needs its length to seek to the next block. |
+| **HUF (Huff0)** | 128 KB | **per-block** — HUF builds+embeds the Huffman table inside each block's compressed blob (no model in the header) | `4-byte cs` + `cs`-byte blob; `cs == 0xFFFFFFFF` ⇒ `bs` raw bytes (incompressible) | **explicit `cs`** — same contiguous-blob reason as FSE; plus a raw sentinel for blocks `HUF_compress` refused (returned 0). |
+
+Key consequences:
+
+- **rANS pays no per-block length field** — its renorm is state-driven, so the
+  boundary falls out of the finite-state machine itself. It only stores the 4
+  flush pairs (32 B) per block, which double as boundary + state.
+- **FSE/HUF store a 4-byte length per block** because they pack the whole block
+  into one contiguous blob; you can't find its end without an explicit size.
+- **FSE keeps a global model** (one tree in the header, reused by every block);
+  **HUF keeps a per-block model** (the tree is rebuilt and stored in each
+  block). This is a size/precision trade-off, not a correctness one: HUF's
+  per-block tree adapts to local statistics but costs ~tree-size per block; the
+  global-model codecs adapt only file-wide but pay the model once.
+- **RLE / incompressible**: none of the three needs a special RLE path — a
+  single-symbol block compresses to ~1 byte (degenerate tree / single state).
+  HUF additionally falls back to raw storage (`0xFFFFFFFF`) when a block yields
+  no gain; rANS/FSE simply emit a near-incompressible stream.
+
 
 ### Decoder profile (assembly, 103 cycles/symbol)
 
@@ -157,6 +237,13 @@ The subbotin_magic branch — Subbotin aligned trim instead of carry propagation
 | `bench_enc.cpp` | rANS N-way interleave ENCODE benchmark (compile-time `-DNINTER=n`). |
 | `bench_dec.cpp` | rANS N-way interleave DECODE benchmark (`-DNINTER=n`, verifies output). |
 | `bench_rans.sh` | Runs the enc+dec benchmark for N=1..5 and prints a throughput table. |
+| `lib/` | Vendored FSE (tANS) library from `Cyan4973/FiniteStateEntropy` (used by fse_encode/fse_decode). |
+| `fse_encode.cpp` | FSE (tANS) order-0 BLOCK encoder — mirrors the rANS block scheme + `zpl_rdtsc()` per-block timing. |
+| `fse_decode.cpp` | FSE order-0 BLOCK decoder (mirrors rans_decode). |
+| `roundtrip_fse.sh` | Roundtrip tests for the FSE engine. |
+| `huf_encode.cpp` | HUF (Huff0) order-0 encoder — high-level `HUF_compress()` per 128 KB block (per-block table), `zpl_rdtsc()` timed. |
+| `huf_decode.cpp` | HUF order-0 decoder — high-level `HUF_decompress()` per block. |
+| `roundtrip_huf.sh` | Roundtrip tests for the HUF engine. |
 
 ## 32-bit engine (rc_codec_32.h)
 

@@ -22,8 +22,8 @@ for ds in lorem ccode english russian repeat random; do
         random)  i=5;;
     esac
     "$BIN/gen_data" $i 200000 "$BIN/test32/$ds.orig"
-    "$BIN/$ENC" "$BIN/test32/$ds.orig" "$BIN/test32/$ds.rc32"
-    "$BIN/$DEC" "$BIN/test32/$ds.rc32" "$BIN/test32/$ds.dec"
+    "$BIN/$ENC" "$BIN/test32/$ds.orig" "$BIN/test32/$ds.rc32" no_progress >/dev/null 2>&1
+    "$BIN/$DEC" "$BIN/test32/$ds.rc32" "$BIN/test32/$ds.dec" no_progress >/dev/null 2>&1
     if cmp -s "$BIN/test32/$ds.orig" "$BIN/test32/$ds.dec"; then
         IN=$(wc -c < "$BIN/test32/$ds.orig")
         OUT=$(wc -c < "$BIN/test32/$ds.rc32")

@@ -68,10 +68,11 @@
 constexpr uint32_t RENORM_BUF_WORDS = (BLOCK_BYTES * 14u / 32u + 1024 +0xff) & ~0xff;
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input_file> <output_file.rans>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <input_file> <output_file.rans> [no_progress]\n", argv[0]);
         return 1;
     }
+    int no_progress = (argc == 4 && strcmp(argv[3], "no_progress") == 0);
 
     /* --- Reading the input file (outside the timed region) --- */
     zpl_file fin;
@@ -232,11 +233,13 @@ int main(int argc, char **argv) {
 
         total_renorm += renorm_count;
         blocks++;
-        printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
-               (uint64_t)i, n, 100.0 * (double)i / (double)n);
-        fflush(stdout);
+        if (!no_progress) {
+            printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
+                   (uint64_t)i, n, 100.0 * (double)i / (double)n);
+            fflush(stdout);
+        }
     }
-    printf("\n");
+    if (!no_progress) printf("\n");
 
     zpl_i64 out_bytes = zpl_file_size(&fout);
     zpl_file_close(&fout);
@@ -255,14 +258,16 @@ int main(int argc, char **argv) {
         : 0.0;
 
     printf("ENCODE-RANS OK\n");
-    printf("  engine:   64-bit rANS, 32-bit renorm, scale_bits=%u\n", RANS_SCALE_BITS);
-    printf("  input:    %s\n", argv[1]);
-    printf("  in_size:  %" PRIu64 " bytes\n", n);
-    printf("  out_size: %" PRIi64 " bytes\n", out_bytes);
-    printf("  blocks:   %zu  (block_bytes=%d)\n", blocks, BLOCK_BYTES);
-    printf("  renorm:   %zu words\n", total_renorm);
-    printf("  ratio:    %.2f%%  (%.3f bits/byte)\n", ratio, bpb);
-    printf("  encode:   %" PRIu64 " ms  (%.1f MB/s)\n", total_enc_time_ms, mb_s);
-    printf("          : %u ticks per symbol\n", ticks_per_symbol);
+    printf("  engine    : 64-bit rANS, 32-bit renorm, scale_bits=%u, N=4\n", RANS_SCALE_BITS);
+    printf("  input     : %s\n", argv[1]);
+    printf("  in_size   : %" PRIu64 " bytes\n", n);
+    printf("  out_size  : %" PRIi64 " bytes\n", out_bytes);
+    printf("  blocks    : %zu  (block_bytes=%d)\n", blocks, BLOCK_BYTES);
+    printf("  renorm    : %zu words\n", total_renorm);
+    printf("  bpb       : %.3f\n", bpb);
+    printf("  ratio_pct : %.2f\n", ratio);
+    printf("  encode_ms : %" PRIu64 "\n", total_enc_time_ms);
+    printf("  encode_mbs: %.1f\n", mb_s);
+    printf("  enc_ticks : %u\n", ticks_per_symbol);
     return 0;
 }

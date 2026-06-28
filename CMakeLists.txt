@@ -93,6 +93,33 @@ add_custom_target(bench_rans
     COMMENT "rANS N-way interleave benchmark (N=1..5, min of 5 runs)"
 )
 
+# --- FSE/HUF library (tANS + Huff0, vendored under lib/) ---
+add_library(fse STATIC
+    lib/fse_compress.c
+    lib/fse_decompress.c
+    lib/entropy_common.c
+    lib/hist.c
+    lib/huf_compress.c
+    lib/huf_decompress.c
+)
+# tableLog cap raised 12 -> 14 to match the rc64 14-bit model
+target_compile_definitions(fse PRIVATE FSE_MAX_MEMORY_USAGE=16)
+target_include_directories(fse PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+
+# --- FSE encoder/decoder (block scheme, mirrors rans_encode/rans_decode) ---
+add_executable(fse_encode fse_encode.cpp)
+target_link_libraries(fse_encode fse)
+
+add_executable(fse_decode fse_decode.cpp)
+target_link_libraries(fse_decode fse)
+
+# --- HUF (Huff0) encoder/decoder (block scheme, global tree) ---
+add_executable(huf_encode huf_encode.cpp)
+target_link_libraries(huf_encode fse)
+
+add_executable(huf_decode huf_decode.cpp)
+target_link_libraries(huf_decode fse)
+
 # --- Roundtrip test ---
 add_custom_target(roundtrip
     COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip.sh ${CMAKE_BINARY_DIR}
@@ -113,4 +140,18 @@ add_custom_target(roundtrip_rans
     DEPENDS rans_encode rans_decode gen_data
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running roundtrip tests on all datasets (rANS engine)"
+)
+
+add_custom_target(roundtrip_fse
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip_fse.sh ${CMAKE_BINARY_DIR}
+    DEPENDS fse_encode fse_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (FSE engine)"
+)
+
+add_custom_target(roundtrip_huf
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip_huf.sh ${CMAKE_BINARY_DIR}
+    DEPENDS huf_encode huf_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (HUF engine)"
 )

@@ -21,8 +21,8 @@ for ds in lorem ccode english russian repeat random; do
         random)  i=5;;
     esac
     "$BIN/gen_data" $i 200000 "$BIN/test/$ds.orig"
-    "$BIN/$ENC" "$BIN/test/$ds.orig" "$BIN/test/$ds.rc"
-    "$BIN/$DEC" "$BIN/test/$ds.rc" "$BIN/test/$ds.dec"
+    "$BIN/$ENC" "$BIN/test/$ds.orig" "$BIN/test/$ds.rc" no_progress >/dev/null 2>&1
+    "$BIN/$DEC" "$BIN/test/$ds.rc" "$BIN/test/$ds.dec" no_progress >/dev/null 2>&1
     if cmp -s "$BIN/test/$ds.orig" "$BIN/test/$ds.dec"; then
         echo "  ROUNDTRIP OK: $(wc -c < "$BIN/test/$ds.orig") bytes"
     else

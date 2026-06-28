@@ -4,3 +4,4 @@ build/
 *.orig
 *.dec
 .vscode/
+.kilo/

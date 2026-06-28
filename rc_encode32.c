@@ -37,10 +37,11 @@
 #define PROGRESS_BLOCK (16 * 1024)
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input_file> <output_file.rc32>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <input_file> <output_file.rc32> [no_progress]\n", argv[0]);
         return 1;
     }
+    int no_progress = (argc == 4 && strcmp(argv[3], "no_progress") == 0);
 
     /* --- Reading the input file --- */
     zpl_file fin;
@@ -163,12 +164,14 @@ int main(int argc, char **argv) {
         }
         total_ticks += zpl_rdtsc() - t0;
         i += block;
-        printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
-               (uint64_t)i, n, 100.0 * (double)i / (double)n);
-        fflush(stdout);
+        if (!no_progress) {
+            printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
+                   (uint64_t)i, n, 100.0 * (double)i / (double)n);
+            fflush(stdout);
+        }
     }
     rc32_enc_flush(&rc);
-    printf("\n");
+    if (!no_progress) printf("\n");
 
     size_t nwords = rc32_enc_size(&rc);
 
@@ -201,13 +204,15 @@ int main(int argc, char **argv) {
         ? (double)n / (total_enc_time_ms * 1048576.0 / 1000.0)
         : 0.0;
 
-    printf("ENCODE32 OK\n");
-    printf("  engine:   32-bit in-place carry RC, 16-bit words, TOTAL_BITS=12\n");
-    printf("  input:    %s\n", argv[1]);
-    printf("  in_size:  %" PRIu64 " bytes\n", n);
-    printf("  out_size: %" PRIi64 " bytes\n", out_bytes);
-    printf("  ratio:    %.2f%%  (%.3f bits/byte)\n", ratio, bpb);
-    printf("  encode:   %" PRIu64 " ms  (%.1f MB/s)\n", total_enc_time_ms, mb_s);
-    printf("          : %u ticks per symbol\n", ticks_per_symbol);
+    printf("ENCODE-RC32 OK\n");
+    printf("  engine    : 32-bit in-place carry RC, 16-bit words, TOTAL_BITS=12\n");
+    printf("  input     : %s\n", argv[1]);
+    printf("  in_size   : %" PRIu64 " bytes\n", n);
+    printf("  out_size  : %" PRIi64 " bytes\n", out_bytes);
+    printf("  bpb       : %.3f\n", bpb);
+    printf("  ratio_pct : %.2f\n", ratio);
+    printf("  encode_ms : %" PRIu64 "\n", total_enc_time_ms);
+    printf("  encode_mbs: %.1f\n", mb_s);
+    printf("  enc_ticks : %u\n", ticks_per_symbol);
     return 0;
 }

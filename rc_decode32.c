@@ -25,10 +25,11 @@
 
 int main(int argc, char **argv) {
     static uint8_t out_buf[OUT_BUF_SIZE];
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input.rc32> <output>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <input.rc32> <output> [no_progress]\n", argv[0]);
         return 1;
     }
+    int no_progress = (argc == 4 && strcmp(argv[3], "no_progress") == 0);
 
     zpl_file fin;
     zpl_file_error err = zpl_file_open(&fin, argv[1]);
@@ -173,11 +174,13 @@ int main(int argc, char **argv) {
             return 1;
         }
         i += block_size;
-        printf("\r                      \r%zu / %zu  (%3.1f%%)",
-               i, n, 100.0 * (double)i / (double)n);
-        fflush(stdout);
+        if (!no_progress) {
+            printf("\r                      \r%zu / %zu  (%3.1f%%)",
+                   i, n, 100.0 * (double)i / (double)n);
+            fflush(stdout);
+        }
     }
-    printf("\n");
+    if (!no_progress) printf("\n");
 
     uint32_t ticks_per_symbol = (n > 0) ? (uint32_t)(total_ticks / n) : 0;
     uint64_t total_dec_time_ms = (zpl_rdtsc_freq > 0)
@@ -190,11 +193,11 @@ int main(int argc, char **argv) {
     zpl_file_close(&fin);
     free(words);
 
-    printf("DECODE32 OK\n");
-    printf("  engine:   32-bit in-place carry RC, 16-bit words, TOTAL_BITS=12\n");
-    printf("  decode:   %" PRIu64 " ms  (%.1f MB/s)\n", total_dec_time_ms, mb_s);
-    printf("          : %u ticks per symbol\n", ticks_per_symbol);
-    printf("  memory:   %.2f MB\n",
-           (float)ac_u16_len / (1024.0f * 1024.0f / 2));
+    printf("DECODE-RC32 OK\n");
+    printf("  engine    : 32-bit in-place carry RC, 16-bit words, TOTAL_BITS=12\n");
+    printf("  decode_ms : %" PRIu64 "\n", total_dec_time_ms);
+    printf("  decode_mbs: %.1f\n", mb_s);
+    printf("  dec_ticks : %u\n", ticks_per_symbol);
+    printf("  memory_mb : %.2f\n", (float)ac_u16_len / (1024.0f * 1024.0f / 2));
     return 0;
 }
