@@ -63,6 +63,20 @@ if(MATH_LIBRARY)
     target_link_libraries(rc_decode32 ${MATH_LIBRARY})
 endif()
 
+# --- 32-bit RC decoder, alternative division backends ---
+# Same source (rc_decode32.c), selectable via -DUSE_FLOAT_DIV / -DUSE_LUT_DIV.
+add_executable(rc_decode32_fp rc_decode32.c)
+target_compile_definitions(rc_decode32_fp PRIVATE USE_FLOAT_DIV)
+if(MATH_LIBRARY)
+    target_link_libraries(rc_decode32_fp ${MATH_LIBRARY})
+endif()
+
+add_executable(rc_decode32_lutdiv rc_decode32.c)
+target_compile_definitions(rc_decode32_lutdiv PRIVATE USE_LUT_DIV)
+if(MATH_LIBRARY)
+    target_link_libraries(rc_decode32_lutdiv ${MATH_LIBRARY})
+endif()
+
 # --- rANS engine (64-bit state, 32-bit renorm, 14-bit static model) ---
 add_executable(rans_encode rans_encode.cpp)
 if(MATH_LIBRARY)
@@ -133,6 +147,13 @@ add_custom_target(roundtrip32
     DEPENDS rc_encode32 rc_decode32 gen_data
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running roundtrip tests on all datasets (32-bit engine, 12-bit total)"
+)
+
+add_custom_target(roundtrip32_lut
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip32_lut.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc_encode32 rc_decode32_lutdiv gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (32-bit RC + LUT Variant D decoder)"
 )
 
 add_custom_target(roundtrip_rans

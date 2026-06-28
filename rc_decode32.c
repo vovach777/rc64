@@ -110,6 +110,11 @@ int main(int argc, char **argv) {
     }
 #endif
 
+#if defined(USE_LUT_DIV)
+    /* Initialize the global fast-division LUT (Variant D). */
+    rc_div_lut_init();
+#endif
+
     zpl_i64 ac_data_len = zpl_file_size(&fin) - 524;  /* 4+8+512 */
 
     /* CPU calibration */

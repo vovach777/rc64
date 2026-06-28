@@ -145,18 +145,24 @@ static inline void rc32_dec_init(rc32_dec_t *d, const uint16_t *in, size_t len) 
 static inline size_t rc32_dec_pos(const rc32_dec_t *d) { return d->pos; }
 
 /* Compute v = code / r (floor division).
-   Default: integer divl (~23 cycles on Skylake).
-   When USE_FLOAT_DIV is defined: via double (~13 cycles):
-       v = (uint32_t)((double)code / (double)r)
-   FP division rounds to nearest, so the result may be 1 greater than
-   the true floor. We correct with a single imull+cmp+sbb (~3 cycles),
-   for a total of ~16 cycles instead of 23.
+   Three selectable backends:
+
+   1. Default (no macro): integer `div` (~22-27 cycles on Haswell/Skylake).
+   2. USE_FLOAT_DIV:    via double (~13 cycles latency, ~5c throughput).
+       FP division rounds to nearest, so the result may be 1 greater than
+       the true floor. We correct with a single imull+cmp+sbb (~3 cycles).
+   3. USE_LUT_DIV:      8-bit LUT + Newton-Raphson refinement (~24 cycles
+       latency, ~4c throughput — see model_12.h, rc_fast_div).
+       Requires rc_div_lut_init() to be called once at program start.
 
    Safety: code <= 0xFFFFFFFF and r >= 16 are exactly representable in
    double (53-bit mantissa), as is their ratio (<= 2^28). */
 static inline uint32_t rc32_dec_get_cum(const rc32_dec_t *d) {
     uint32_t r = d->range >> RC32_TOTAL_BITS;
-#ifdef USE_FLOAT_DIV
+#if defined(USE_LUT_DIV)
+    /* 8-bit LUT + Newton-Raphson. Pure integer, no FP, no div. */
+    uint32_t v = rc_fast_div(d->code, r);
+#elif defined(USE_FLOAT_DIV)
     /* FP division + off-by-one-high correction. */
     uint32_t v = (uint32_t)((double)d->code / (double)r);
     /* If FP rounded up (v * r > code), decrement by 1.

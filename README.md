@@ -233,6 +233,7 @@ The subbotin_magic branch — Subbotin aligned trim instead of carry propagation
 | `rc_diag.c` | Encoder branch diagnostics. |
 | `roundtrip.sh` | Roundtrip tests for the 64-bit range coder. |
 | `roundtrip32.sh` | Roundtrip tests for the 32-bit engine. |
+| `roundtrip32_lut.sh` | Roundtrip tests for the 32-bit RC + LUT Variant D decoder. |
 | `roundtrip_rans.sh` | Roundtrip tests for the rANS engine. |
 | `bench_enc.cpp` | rANS N-way interleave ENCODE benchmark (compile-time `-DNINTER=n`). |
 | `bench_dec.cpp` | rANS N-way interleave DECODE benchmark (`-DNINTER=n`, verifies output). |
@@ -267,6 +268,43 @@ except:
 - signature `'r','3'` instead of `'r','c'`;
 - the stream consists of `uint16_t` words (instead of `uint32_t`);
 - the model is 12-bit (`TARGET_TOTAL_12 = 4096`) instead of 14-bit.
+
+### Decoder division backend (selectable)
+
+`rc32_dec_get_cum` computes `v = code / r` (the range-coder quotient). Three
+selectable backends, chosen at compile time:
+
+| Backend | Macro | How | Notes |
+|---|---|---|---|
+| integer `div` | *(default)* | `divl` | Simplest; best on CPUs with fast 32-bit divide. |
+| double | `-DUSE_FLOAT_DIV` | `divsd` + imul/cmp/sbb correction | FP rounds-to-nearest, off-by-one-high fixed branchlessly. |
+| **LUT Variant D** | `-DUSE_LUT_DIV` | 8-bit LUT (2 KB) + Newton-Raphson + 1 branchless correction | Pure integer, no div/FP; `rc_div_lut_init()` once at start. Exact for `v_true < 16384` (RC needs `< 4096`). |
+
+Variant D is from `Cyan4973/FiniteStateEntropy`-style reciprocal work (8-bit LUT
++ Newton; see `model_12.h`). The LUT underestimates `1/r` (floor, not ceil), so
+the remainder stays ≥ 0 (no unsigned wraparound) and a single upward correction
+makes the result exact.
+
+CMake targets: `rc_decode32` (default), `rc_decode32_fp` (`-DUSE_FLOAT_DIV`),
+`rc_decode32_lutdiv` (`-DUSE_LUT_DIV`); `make roundtrip32_lut` verifies the LUT
+decoder on all datasets.
+
+**Measured on this machine** (Intel i7-4870HQ, Haswell/Crystalwell, enwik9,
+median of 3, decode only — encode is division-free and common):
+
+| Backend | decode ticks/sym | decode MB/s |
+|---|---|---|
+| **integer `div` (default)** | **36** | **65** |
+| double (`USE_FLOAT_DIV`) | 43 | 55 |
+| LUT Variant D (`USE_LUT_DIV`) | 42 | 56 |
+
+On Haswell the integer `divl` **wins** here (the LUT's long critical path —
+`lzcnt`+`shl`+`shr`+LUT load+3×`imul`+correction — doesn't overlap on this core,
+and Haswell lacks the BMI2 `shlx`/`shrx` that speed the shifts). Variant D is
+designed for Skylake+ where `div` latency is higher (~24c) and BMI2 is available.
+**Always measure on the target CPU** — as the LUT research notes, on CPUs with a
+fast `div` (Sapphire Rapids, Apple silicon, recent Neoverse) integer division
+stays faster; the LUT pays off on Skylake-class parts.
 
 ## rANS engine (rans_codec.h, rans_encode.cpp, rans_decode.cpp)
 

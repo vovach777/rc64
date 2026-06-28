@@ -197,4 +197,121 @@ static inline uint8_t model12_find(const model12_t *M, uint16_t cum,
     return s;
 }
 
+/* =========================================================================
+ * FAST INTEGER DIVISION LUT — Variant D (8-bit LUT + Newton-Raphson)
+ * =========================================================================
+ *
+ * Replaces `code / r` in rc32_dec_get_cum with a pure-integer computation:
+ *
+ *   1. lzcnt(r) → k; normalize r_norm = r << k so MSB is at bit 31.
+ *   2. LUT lookup by top 8 bits of r_norm (256 entries, 2 KB → fits in L1).
+ *   3. v0 = (code * mult) >> shift              — underestimate, error ≤ 32.
+ *   4. Newton step:
+ *        err   = code - v0 * r                  (≥ 0 since v0 ≤ v_true)
+ *        delta = (err * mult) >> shift           — underestimate, error ≤ 1.
+ *        v1    = v0 + delta                      — ∈ {v_true-1, v_true}.
+ *   5. Upward branchless correction:
+ *        v1 += ((v1+1)*r ≤ code)                — exact.
+ *
+ * WHY UNDERESTIMATE (floor instead of ceil):
+ *   With mult = floor(2^PREC / r_max_norm), we get mult/2^shift ≤ 1/r for
+ *   every r in the bucket. This makes v0 ≤ v_true and err ≥ 0 (no wraparound
+ *   in unsigned subtraction). After the Newton step, v1 underestimates by at
+ *   most 1, so a single UPWARD correction makes the result exact. No need
+ *   for two-sided correction.
+ *
+ * ERROR ANALYSIS (r ∈ [16, 2^20), v_true < 4096):
+ *   - Bucket width in r_norm = 2^24 → relative variation ≤ 2^-7.
+ *   - After LUT:   |v0 - v_true| ≤ v_true · 2^-7 ≤ 32.
+ *   - After Newton: |v1 - v_true| ≤ 1.
+ *   - After correction: v1 == v_true, exactly.
+ *
+ * The LUT is GLOBAL and does not depend on the model — initialize once
+ * at program start with rc_div_lut_init().
+ * ========================================================================= */
+
+#define RCDIV_IDX_BITS   8u
+#define RCDIV_LUT_SIZE   (1u << RCDIV_IDX_BITS)   /* 256 entries      */
+#define RCDIV_IDX_SHIFT  (32u - RCDIV_IDX_BITS)   /* 24               */
+#define RCDIV_PREC       48u                       /* fixed-point bits */
+
+typedef struct {
+    uint32_t mult;        /* M = floor(2^PREC / r_max_norm)            */
+    uint8_t  shift_base;  /* = RCDIV_PREC; runtime shift = base - k   */
+    uint8_t  _pad[3];     /* keep struct 8-byte aligned               */
+} rc_div_entry_t;
+
+typedef rc_div_entry_t rc_div_lut_t[RCDIV_LUT_SIZE];
+
+/* Global LUT. `static` in a header gives each translation unit its own
+   copy, but only rc_decode32 actually populates/uses it. */
+static rc_div_lut_t g_rc_div_lut;
+
+/* -------- portable count-leading-zeros -------- */
+#if defined(__GNUC__) || defined(__clang__)
+  #define RC_CLZ32(x)  __builtin_clz((x))
+#elif defined(_MSC_VER)
+  #include <intrin.h>
+  static __forceinline uint32_t rc_clz32_(uint32_t x) {
+      unsigned long b; _BitScanReverse(&b, x); return 31u ^ (uint32_t)b;
+  }
+  #define RC_CLZ32(x)  rc_clz32_((x))
+#else
+  static inline uint32_t rc_clz32_(uint32_t x) {
+      uint32_t n = 0;
+      if (x == 0) return 32;
+      while (!(x & 0x80000000u)) { x <<= 1; n++; }
+      return n;
+  }
+  #define RC_CLZ32(x)  rc_clz32_((x))
+#endif
+
+/* Initialize the LUT. Call once at program start (before any rc_fast_div).
+   Cost: 256 iterations of a single integer division — sub-microsecond. */
+static inline void rc_div_lut_init(void) {
+    uint32_t idx;
+    for (idx = 0; idx < RCDIV_LUT_SIZE; ++idx) {
+        /* r_max_norm = (idx+1) << 24 = exclusive upper bound of the bucket.
+           For r ≥ 16, only idx ∈ [128, 255] is reachable, but we fill
+           the whole table for safety. */
+        uint64_t r_max = ((uint64_t)idx + 1) << RCDIV_IDX_SHIFT;
+        uint64_t one   = (uint64_t)1 << RCDIV_PREC;
+        uint64_t m     = one / r_max;        /* floor → underestimate */
+
+        g_rc_div_lut[idx].mult       = (uint32_t)m;
+        g_rc_div_lut[idx].shift_base = (uint8_t)RCDIV_PREC;
+    }
+}
+
+/* Returns floor(code / r). Requires r >= 1 (in RC always r >= 16).
+   Branchless, pure integer. See error analysis above. */
+static inline uint32_t rc_fast_div(uint32_t code, uint32_t r) {
+    /* Step 1: normalize r so MSB is at bit 31. */
+    int      k      = (int)RC_CLZ32(r);
+    uint32_t r_norm = r << k;
+
+    /* Step 2: top 8 bits of r_norm → LUT index. */
+    uint32_t idx    = r_norm >> RCDIV_IDX_SHIFT;
+    uint32_t mult   = g_rc_div_lut[idx].mult;
+    uint32_t shift  = (uint32_t)g_rc_div_lut[idx].shift_base - (uint32_t)k;
+
+    /* Step 3: v0 = (code * mult) >> shift.  v0 ≤ v_true, error ≤ 32. */
+    uint32_t v0 = (uint32_t)(((uint64_t)code * (uint64_t)mult) >> shift);
+
+    /* Step 4: Newton-Raphson refinement.
+       err = code - v0*r  (≥ 0 because v0 underestimates v_true).
+       delta ≈ err / r, also underestimates by ≤ 1.
+       v1 = v0 + delta ∈ {v_true - 1, v_true}. */
+    uint64_t prod  = (uint64_t)v0 * (uint64_t)r;
+    uint64_t err   = (uint64_t)code - prod;                 /* no wraparound */
+    uint32_t delta = (uint32_t)((err * (uint64_t)mult) >> shift);
+    uint32_t v1    = v0 + delta;
+
+    /* Step 5: branchless upward correction.
+       If (v1+1)*r ≤ code, then v1+1 ≤ v_true, so increment. */
+    v1 += (uint32_t)((uint64_t)(v1 + 1) * (uint64_t)r <= (uint64_t)code);
+
+    return v1;
+}
+
 #endif /* MODEL_12_H */
