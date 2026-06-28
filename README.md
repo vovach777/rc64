@@ -306,6 +306,35 @@ designed for Skylake+ where `div` latency is higher (~24c) and BMI2 is available
 fast `div` (Sapphire Rapids, Apple silicon, recent Neoverse) integer division
 stays faster; the LUT pays off on Skylake-class parts.
 
+### Why the LUT exists: N-way interleave throughput
+
+The point of replacing `div` with the imul-based LUT is **not** latency (the
+LUT's critical path is longer) but **throughput under interleaving**. A single
+`div` unit serializes N independent streams; an imul pipeline (port 1, 1c
+throughput) lets N streams overlap. Measured here (Haswell i7-4870HQ, enwik9,
+decode, in-memory round-robin of N independent RC32 streams):
+
+| N | integer `div` (t/sym · MB/s) | LUT Variant D (t/sym · MB/s) |
+|---|---|---|
+| 1 | 41 · 57 | 52 · 45 |
+| 2 | **26 · 88** | 35 · 68 |
+| 4 | 29 · 80 | 38 · 63 |
+| 8 | 33 · 72 | 39 · 60 |
+
+On **this** Haswell core `div` wins at every N — its `divl` is fast enough and
+the LUT's 4-`imul` chain is longer, plus Haswell lacks BMI2 `shlx/shrx` (shifts
+go through `CL`, slow), so the LUT's critical path doesn't collapse under
+interleave. Interleave itself helps (N=2 ≈ **+50–60%**) but tops out at N=2
+(div-unit contention) / N=2–3 (cache+register pressure on the N states).
+
+**Where the LUT *would* win:** Skylake+ (`div` latency ~24c vs Haswell ~22c, and
+BMI2 `shlx/shrx` collapse the shift chain) — there N≈4–6 should let the imul
+throughput dominate and beat `div`. The numbers above are Haswell-specific; the
+same probe on Skylake is expected to flip the LUT row ahead of `div` at N≥3.
+The practical takeaway for a Haswell target: **RC32 + N=2 interleave + integer
+`div`** is the fastest decoder here (≈88 MB/s, +54% over single-stream). On
+Skylake-class targets, swap in `USE_LUT_DIV` and push N to ~4.
+
 ## rANS engine (rans_codec.h, rans_encode.cpp, rans_decode.cpp)
 
 A 64-bit rANS (Asymmetric Numeral System) codec: 64-bit state, 32-bit renorm,
