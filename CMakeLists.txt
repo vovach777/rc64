@@ -77,6 +77,36 @@ if(MATH_LIBRARY)
     target_link_libraries(rc_decode32_lutdiv ${MATH_LIBRARY})
 endif()
 
+# --- RC32SUB engine (Subbotin carryless, byte-oriented, 32-bit state) ---
+add_executable(rc32sub_encode rc32sub_encode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc32sub_encode ${MATH_LIBRARY})
+endif()
+add_executable(rc32sub_decode rc32sub_decode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc32sub_decode ${MATH_LIBRARY})
+endif()
+
+# --- RC24 engine (24-bit carryless, direct 12-bit LUT division) ---
+add_executable(rc24_encode rc24_encode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc24_encode ${MATH_LIBRARY})
+endif()
+add_executable(rc24_decode rc24_decode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc24_decode ${MATH_LIBRARY})
+endif()
+
+# --- RC24S engine (24-bit carryless, N=4 super-interleaved, shared buffer) ---
+add_executable(rc24s_encode rc24s_encode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc24s_encode ${MATH_LIBRARY})
+endif()
+add_executable(rc24s_decode rc24s_decode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc24s_decode ${MATH_LIBRARY})
+endif()
+
 # --- rANS engine (64-bit state, 32-bit renorm, 14-bit static model) ---
 add_executable(rans_encode rans_encode.cpp)
 if(MATH_LIBRARY)
@@ -154,6 +184,27 @@ add_custom_target(roundtrip32_lut
     DEPENDS rc_encode32 rc_decode32_lutdiv gen_data
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running roundtrip tests on all datasets (32-bit RC + LUT Variant D decoder)"
+)
+
+add_custom_target(roundtrip32sub
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip32sub.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc32sub_encode rc32sub_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (RC32SUB Subbotin 32-bit carryless)"
+)
+
+add_custom_target(roundtrip24
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip24.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc24_encode rc24_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (RC24 24-bit carryless)"
+)
+
+add_custom_target(roundtrip24s
+    COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip24s.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc24s_encode rc24s_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Running roundtrip tests on all datasets (RC24S 24-bit N=4 shared-buffer interleaved)"
 )
 
 add_custom_target(roundtrip_rans

@@ -106,6 +106,8 @@ the `rdtsc` frequency calibration jitters ±0.5% per run; the median is stable).
 |---|---|---|---|---|---|---|
 | 64-bit RC (Schindler) | 14-bit | 644,975,728 (64.50%) | 5.160 | 250 MB/s (9 t/s) | 56 MB/s (42 t/s) | 21.9 s |
 | 32-bit RC | 12-bit | 648,568,754 (64.86%) | 5.189 | 204 MB/s (11 t/s) | 68 MB/s (35 t/s) | 19.6 s |
+| **RC24 single (LUT24)** | **12-bit** | **648,987,394 (64.90%)** | **5.192** | **~136 MB/s (17 t/s)** | **~62 MB/s (38 t/s)** | **~13.7 s** |
+| **RC24S N=4 shared (LUT24)** | **12-bit** | **648,987,394 (64.90%)** | **5.192** | **~104 MB/s (22 t/s)** | **~59 MB/s (40 t/s)** | **~14.1 s** |
 | rANS (4-way interleave) | 14-bit | 645,067,056 (64.51%) | 5.161 | 200 MB/s (11 t/s) | **416 MB/s (5 t/s)** | 7.4 s |
 | FSE tANS (reference) | 14-bit | 644,780,828 (64.48%) | 5.158 | 372 MB/s (6 t/s) | 349 MB/s (6 t/s) | 5.6 s |
 | HUF / Huff0 (reference) | per-block | 646,646,919 (64.66%) | 5.173 | **569 MB/s (4 t/s)** | **651 MB/s (3 t/s)** | **3.3 s** |
@@ -129,6 +131,14 @@ part of the measurement, by design — no tree extraction). Incompressible block
 (`HUF_compress` returns 0) are stored raw. zpl_rdtsc() timing per block, same as
 the others. The "4X" in Huff0 is **4 interleaved bitstreams within one thread**
 (ILP/SIMD), not OS threads — neither HUF nor FSE spawn threads.
+
+- **RC24 note**: both single-stream (`rc24_decode`) and N=4 shared-buffer
+  (`rc24s_decode`) use the 12-bit direct LUT (`rc_fast_div24`) by default.
+  We also benchmarked an SSE `_mm_rcp_ss` Newton-Raphson division
+  (`-DUSE_SSE_RCP24`) from `rc24_test.c`. On this Haswell i7-4870HQ it is
+  **slower** than the LUT: single-stream drops from ~62 MB/s to ~42 MB/s;
+  RC24S drops from ~59 MB/s to ~54 MB/s. The LUT remains the default. The SSE-rcp
+  path is kept as a compile-time option for CPUs where FP reciprocal wins.
 
 - **Measurement fairness**: the FSE and rANS numbers are now measured with the
   *identical* scheme — 256 KB blocks, global model built once (untimed), in-core
@@ -216,6 +226,16 @@ The subbotin_magic branch — Subbotin aligned trim instead of carry propagation
 
 | File | Purpose |
 |---|---|
+| `rc24_codec.h` | RC24 24-bit carryless Subbotin codec (encoder + decoder). Default decoder division: 12-bit direct LUT (`rc_fast_div24`). Optional SSE reciprocal via `-DUSE_SSE_RCP24`. |
+| `rc24_encode.c` / `rc24_decode.c` | Single-stream RC24 tools (`.rc24`). |
+| `rc24s_encode.c` / `rc24s_decode.c` | RC24 N=4 shared-buffer interleaved tools (`.rc24s`). |
+| `rc32sub_codec.h` | RC32SUB 32-bit carryless Subbotin codec. |
+| `rc32sub_encode.c` / `rc32sub_decode.c` | Single-stream RC32SUB tools (`.rc32sub`). |
+| `roundtrip24.sh` | Roundtrip tests for single-stream RC24. |
+| `roundtrip24s.sh` | Roundtrip tests for RC24S shared-buffer N=4. |
+| `roundtrip32sub.sh` | Roundtrip tests for RC32SUB. |
+| `test_rc24.c` | RC24 synthetic regression tests. |
+| `future_work.md` | Open research problems, including dynamic ring-based reservation for RC24 interleave. |
 | `rc_codec.h` | Inplace codec (encoder + decoder, always_inline). 64-bit Schindler. |
 | `model.h` | Static order-0 model (14 bit, total=16384). For the 64-bit engines (RC and rANS). |
 | `rc_encode.c` | Encoder (64-bit range coder). |
