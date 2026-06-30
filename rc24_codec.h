@@ -1,6 +1,8 @@
 /* RC24 — 24-bit Carryless RC, TOP=BOT=2^16. 12-bit model.
- * Division uses a direct 12-bit LUT (rc_fast_div24) for floor(diff/range).
- * Optional SSE _mm_rcp_ss division is available via -DUSE_SSE_RCP24.
+ * Decoder division is selectable:
+ *   - default: direct 12-bit LUT (rc_fast_div24) — fastest on Haswell.
+ *   - -DUSE_INT_DIV24: plain integer division (code-low)/range.
+ *   - -DUSE_SSE_RCP24: SSE _mm_rcp_ss Newton-Raphson.
  * Subbotin carryless property makes N-way interleave trivial: no merge. */
 #ifndef RC24_CODEC_H
 #define RC24_CODEC_H
@@ -43,7 +45,9 @@ static inline void rc24_dec_init(rc24_dec_t *d, const uint8_t *in, size_t len) {
 }
 static inline uint32_t rc24_dec_get_cum(rc24_dec_t *d) {
     d->range >>= 12;   /* range / 4096 */
-#if defined(USE_SSE_RCP24)
+#if defined(USE_INT_DIV24)
+    return (d->code - d->low) / d->range;
+#elif defined(USE_SSE_RCP24)
     return rc_fast_div24_rcp(d->code - d->low, d->range);
 #else
     return rc_fast_div24(d->code - d->low, d->range);

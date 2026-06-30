@@ -134,11 +134,14 @@ the others. The "4X" in Huff0 is **4 interleaved bitstreams within one thread**
 
 - **RC24 note**: both single-stream (`rc24_decode`) and N=4 shared-buffer
   (`rc24s_decode`) use the 12-bit direct LUT (`rc_fast_div24`) by default.
-  We also benchmarked an SSE `_mm_rcp_ss` Newton-Raphson division
-  (`-DUSE_SSE_RCP24`) from `rc24_test.c`. On this Haswell i7-4870HQ it is
-  **slower** than the LUT: single-stream drops from ~62 MB/s to ~42 MB/s;
-  RC24S drops from ~59 MB/s to ~54 MB/s. The LUT remains the default. The SSE-rcp
-  path is kept as a compile-time option for CPUs where FP reciprocal wins.
+  We also benchmarked two alternate division backends on this Haswell
+  i7-4870HQ:
+  - Plain integer division (`-DUSE_INT_DIV24`): ~49 MB/s single-stream,
+    ~59 MB/s in RC24S.  Slower than LUT on single-stream, ties on N=4.
+  - SSE `_mm_rcp_ss` Newton-Raphson (`-DUSE_SSE_RCP24`): ~42 MB/s
+    single-stream, ~54 MB/s in RC24S.  Slower than LUT on both.
+  The LUT remains the default; the alternate paths are kept as compile-time
+  options for other CPUs.
 
 - **Measurement fairness**: the FSE and rANS numbers are now measured with the
   *identical* scheme — 256 KB blocks, global model built once (untimed), in-core
