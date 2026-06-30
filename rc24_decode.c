@@ -116,7 +116,6 @@ int main(int argc, char **argv) {
         zpl_u64 t0 = zpl_rdtsc();
         for (uint32_t k = 0; k < block_size; k++) {
             uint16_t cum = (uint16_t)rc24_dec_get_cum(&rd);
-            if (cum >= RC24_TOTAL) cum = RC24_TOTAL - 1;
             uint16_t cum_lo, freq;
             uint8_t sym = model12_find(&M, cum, &cum_lo, &freq);
             rc24_dec_step(&rd, cum_lo, freq);

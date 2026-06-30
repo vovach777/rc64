@@ -140,8 +140,6 @@ int main(int argc, char **argv) {
             _mm_prefetch((const char *)(d1.in + d1.pos + 64), _MM_HINT_T0);
             uint32_t cum0 = rc24_dec_get_cum(&d0);
             uint32_t cum1 = rc24_dec_get_cum(&d1);
-            if (cum0 >= RC24_TOTAL) cum0 = RC24_TOTAL - 1;
-            if (cum1 >= RC24_TOTAL) cum1 = RC24_TOTAL - 1;
             uint16_t cf0, f0, cf1, f1;
             uint8_t sym0 = model12_find(&M, (uint16_t)cum0, &cf0, &f0);
             uint8_t sym1 = model12_find(&M, (uint16_t)cum1, &cf1, &f1);
