@@ -97,7 +97,7 @@ if(MATH_LIBRARY)
     target_link_libraries(rc24_decode ${MATH_LIBRARY})
 endif()
 
-# --- RC24 2-WAY engine (24-bit carryless, two interleaved streams) ---
+# --- RC24 2-WAY engine (24-bit carryless, shared-buffer N=2 interleaved) ---
 add_executable(rc24_2way_encode rc24_2way_encode.c)
 if(MATH_LIBRARY)
     target_link_libraries(rc24_2way_encode ${MATH_LIBRARY})
@@ -204,7 +204,7 @@ add_custom_target(roundtrip24_2way
     COMMAND sh ${CMAKE_SOURCE_DIR}/roundtrip24_2way.sh ${CMAKE_BINARY_DIR}
     DEPENDS rc24_2way_encode rc24_2way_decode gen_data
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running roundtrip tests on all datasets (RC24 2-way interleaved)"
+    COMMENT "Running roundtrip tests on all datasets (RC24 shared-buffer 2-way)"
 )
 
 add_custom_target(roundtrip_rans

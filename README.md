@@ -57,11 +57,25 @@ make bench_rans     # rANS N-way interleave benchmark (enc+dec, N=1..5)
 ./huf_decode <input_file.huf> <output_file>
 ```
 
-### Roundtrip test (all 6 datasets)
+### RC24 24-bit carryless Subbotin range coder (scalar)
 ```
-make roundtrip      # 64-bit range coder
-make roundtrip32    # 32-bit range coder
-make roundtrip_rans # rANS engine
+./rc24_encode <input_file> <output_file.rc24>
+./rc24_decode <input_file.rc24> <output_file>
+```
+
+### RC24 2-way shared-buffer interleave
+```
+./rc24_2way_encode <input_file> <output_file.rc24s2w>
+./rc24_2way_decode <input_file.rc24s2w> <output_file>
+```
+
+### Roundtrip tests (all 6 datasets)
+```
+make roundtrip         # 64-bit range coder
+make roundtrip32       # 32-bit range coder
+make roundtrip24       # RC24 24-bit carryless scalar
+make roundtrip24_2way  # RC24 24-bit carryless 2-way shared buffer
+make roundtrip_rans    # rANS engine
 ```
 
 ### Diagnostics (encoder branch statistics, no output written)
@@ -106,8 +120,8 @@ the `rdtsc` frequency calibration jitters ±0.5% per run; the median is stable).
 |---|---|---|---|---|---|---|
 | 64-bit RC (Schindler) | 14-bit | 644,975,728 (64.50%) | 5.160 | 250 MB/s (9 t/s) | 56 MB/s (42 t/s) | 21.9 s |
 | 32-bit RC | 12-bit | 648,568,754 (64.86%) | 5.189 | 204 MB/s (11 t/s) | 68 MB/s (35 t/s) | 19.6 s |
-| **RC24 scalar** | **12-bit** | **680,524,941 (68.05%)** | **5.444** | **130 MB/s (18 t/s)** | **77 MB/s (30 t/s)** | **~12.5 s** |
-| **RC24 2-way** | **12-bit** | **680,880,120 (68.09%)** | **5.447** | **124 MB/s (19 t/s)** | **86–90 MB/s (26–27 t/s)** | **~11.4 s** |
+| **RC24 scalar** | **12-bit** | **680,524,941 (68.05%)** | **5.444** | **127 MB/s (18 t/s)** | **79 MB/s (30 t/s)** | **~12.5 s** |
+| **RC24 2-way shared** | **12-bit** | **680,894,896 (68.09%)** | **5.447** | **122 MB/s (19 t/s)** | **119 MB/s (20 t/s)** | **~10.0 s** |
 | rANS (4-way interleave) | 14-bit | 645,067,056 (64.51%) | 5.161 | 200 MB/s (11 t/s) | **416 MB/s (5 t/s)** | 7.4 s |
 | FSE tANS (reference) | 14-bit | 644,780,828 (64.48%) | 5.158 | 372 MB/s (6 t/s) | 349 MB/s (6 t/s) | 5.6 s |
 | HUF / Huff0 (reference) | per-block | 646,646,919 (64.66%) | 5.173 | **569 MB/s (4 t/s)** | **651 MB/s (3 t/s)** | **3.3 s** |
@@ -137,9 +151,11 @@ the others. The "4X" in Huff0 is **4 interleaved bitstreams within one thread**
   multiply and a 64-bit high-product shift.  Both paths share a human-readable
   Subbotin renorm loop (no nested boolean expression) and at least 1024 bytes
   of zero padding after each stream, so the hot decoder loop reads bytes
-  unconditionally.  2-way interleave splits even/odd symbols into two
-  independent RC24 streams decoded in lock-step; it gives ~+15% decode
-  throughput over the scalar decoder on this Haswell i7-4870HQ.
+  unconditionally.  The 2-way variant uses **a single shared interleaved buffer**
+  (`shared[k * 2 + i]`, even symbols in stream 0, odd symbols in stream 1); it
+  gives ~+50% decode throughput over the scalar decoder on this Haswell
+  i7-4870HQ, while the shared layout keeps the format and the cache footprint
+  compact.
 
 - **Measurement fairness**: the FSE and rANS numbers are now measured with the
   *identical* scheme — 256 KB blocks, global model built once (untimed), in-core
@@ -156,7 +172,8 @@ the others. The "4X" in Huff0 is **4 interleaved bitstreams within one thread**
   256 MB/s, but N is shared with the decoder).
 - **Decode**: **HUF is fastest (651 MB/s, 3 t/s)** — its table lookup is a pure
   load, no arithmetic. **rANS N=4 is next (416 MB/s, 5 t/s)**, beating FSE's
-  2-way decode (349 MB/s, 6 t/s), and ~7× the RC decoders (56–68 MB/s).
+  2-way decode (349 MB/s, 6 t/s).  RC24 scalar is ~79 MB/s and RC24 2-way shared
+  reaches ~119 MB/s; both are much slower than the ANS family on this workload.
 - **Net (enc+dec)**: HUF leads on raw speed but pays the Huffman ratio tax; FSE
   is the best ANS speed/ratio balance; **rANS has a faster decoder than FSE at
   equal 14-bit precision** and is ~2.9× faster end-to-end than either RC engine.
@@ -229,7 +246,7 @@ The subbotin_magic branch — Subbotin aligned trim instead of carry propagation
 |---|---|
 | `rc24_codec.h` | RC24 24-bit carryless Subbotin codec (encoder + decoder). 64-bit exact reciprocal division; human-readable renorm. |
 | `rc24_encode.c` / `rc24_decode.c` | Single-stream RC24 tools (`.rc24`). |
-| `rc24_2way_encode.c` / `rc24_2way_decode.c` | RC24 2-way interleaved tools (`.rc24.2w`). |
+| `rc24_2way_encode.c` / `rc24_2way_decode.c` | RC24 2-way **shared-buffer** interleaved tools (`.rc24s2w`, format `shared[k*2+i]`). |
 | `rc32sub_codec.h` | RC32SUB 32-bit carryless Subbotin codec. |
 | `rc32sub_encode.c` / `rc32sub_decode.c` | Single-stream RC32SUB tools (`.rc32sub`). |
 | `roundtrip24.sh` | Roundtrip tests for single-stream RC24. |
@@ -481,3 +498,38 @@ compromise. **N=4 is hardcoded** in the production codec: best combined
 throughput (decoder's −3 t/sym outweighs the encoder's +1) and the decoder's
 peak. Switch to N=2 for encode-heavy workloads (the `bench_enc`/`bench_dec`
 tools are parameterized via `-DNINTER=n` to re-measure any N).
+
+
+## RC24 formats
+
+### `.rc24` format (single-stream)
+```
+[4 bytes]   signature: 'r','4', flags, rle_sym
+            flags bit 0: is_rle
+[8 bytes]   uint64_t original_len (LE)
+--- RLE mode (is_rle=1) ---
+            (nothing else — rle_sym is in the signature)
+--- RC24 mode (is_rle=0) ---
+[512 bytes] cum[1..256] — uint16_t LE (12-bit cumulative frequencies)
+[variable]  single forward stream of renorm bytes
+```
+
+### `.rc24s2w` format (2-way shared-buffer interleave)
+```
+[4 bytes]   signature: 'r','4', flags, rle_sym
+            flags bit 0: is_rle
+            flags bit 1: 2-way interleave
+[8 bytes]   uint64_t original_len (LE)
+--- RLE mode (is_rle=1) ---
+            (nothing else — rle_sym is in the signature)
+--- RC24 mode (is_rle=0) ---
+[512 bytes] cum[1..256] — uint16_t LE (12-bit cumulative frequencies)
+[4 bytes]   uint32_t max_stream_len LE
+[max_stream_len * 2 bytes] shared interleaved buffer
+            byte k of stream i lives at shared[k * 2 + i]
+            even input positions go to stream 0, odd positions to stream 1
+```
+
+The 2-way encoder issues bytes for stream 0 and stream 1 side by side into the
+shared buffer; the decoder reads each stream forward through the same layout.  No
+separate merge or swizzle step is needed.

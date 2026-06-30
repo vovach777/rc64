@@ -1,18 +1,19 @@
 /* =========================================================================
- * RC24 2-WAY ENCODE — Two interleaved RC24 streams
+ * RC24 2-WAY ENCODE — Two interleaved RC24 streams in one shared buffer
  *
  * Usage:
- *   rc24_2way_encode <input_file> <output_file.rc24.2w> [no_progress]
+ *   rc24_2way_encode <input_file> <output_file.rc24s2w> [no_progress]
  *
- * .rc24.2w format:
+ * .rc24s2w format (same shared-buffer layout as RC24S, N=2):
  *   [4 bytes]   signature: 'r','4', flags, rle_sym
  *               flags bit 1: 2-way interleave
  *   [8 bytes]   uint64_t original_len (LE)
  *   [512 bytes] cum[1..256] — uint16_t LE (12-bit model)
- *   [4 bytes]   uint32_t stream0_len (LE)
- *   [4 bytes]   uint32_t stream1_len (LE)
- *   [stream0_len bytes] stream 0 (even-position symbols)
- *   [stream1_len bytes] stream 1 (odd-position symbols)
+ *   [4 bytes]   uint32_t max_stream_len LE
+ *   [max_stream_len * 2 bytes] shared interleaved buffer
+ *
+ * Byte k of stream i lives at shared[k * 2 + i].  Even input positions go to
+ * stream 0, odd positions to stream 1.  No merge, no swizzle.
  * ========================================================================= */
 
 #include <stdio.h>
@@ -24,133 +25,162 @@
 #  define ZPL_NANO
 #define ZPL_IMPLEMENTATION
 #include "zpl.h"
-
 #include "rc24_codec.h"
 #include "model_12.h"
 
+#define N 2
 #define PROGRESS_BLOCK (16 * 1024)
 
 int main(int argc, char **argv) {
     if (argc < 3 || argc > 4) {
-        fprintf(stderr, "Usage: %s <input_file> <output_file.rc24.2w> [no_progress]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <input> <output.rc24s2w> [no_progress]\n", argv[0]);
         return 1;
     }
-    int no_progress = (argc == 4 && strcmp(argv[3], "no_progress") == 0);
+    int no_progress = (argc == 4 && !strcmp(argv[3], "no_progress"));
 
     zpl_file fin;
-    if (zpl_file_open(&fin, argv[1])) { fprintf(stderr, "fopen input\n"); return 1; }
-    zpl_i64 fsize = zpl_file_size(&fin);
-    if (fsize < 0) { fprintf(stderr, "file_size\n"); zpl_file_close(&fin); return 1; }
-    uint64_t n64 = (uint64_t)fsize;
-    size_t n = (size_t)n64;
+    if (zpl_file_open(&fin, argv[1])) { fprintf(stderr, "open\n"); return 1; }
+    zpl_i64 fs = zpl_file_size(&fin);
+    if (fs < 0) { fprintf(stderr, "size\n"); zpl_file_close(&fin); return 1; }
+    uint64_t n = (uint64_t)fs;
 
-    uint8_t *in = (uint8_t *)malloc(n + 1);
-    if (!in) { fprintf(stderr, "malloc\n"); zpl_file_close(&fin); return 1; }
+    uint8_t *data = malloc((size_t)n + 1);
+    if (!data) { fprintf(stderr, "malloc\n"); zpl_file_close(&fin); return 1; }
     {
-        uint8_t *p = in; int64_t rem = (int64_t)n;
-        while (rem > 0) {
-            uint32_t chunk = (uint32_t)zpl_min(rem, 0x1000000LL);
-            if (!zpl_file_read(&fin, p, chunk)) { fprintf(stderr, "read\n"); zpl_file_close(&fin); free(in); return 1; }
-            p += chunk; rem -= chunk;
+        uint8_t *p = data; int64_t r = (int64_t)n;
+        while (r > 0) {
+            uint32_t c = (uint32_t)zpl_min(r, 0x1000000LL);
+            if (!zpl_file_read(&fin, p, c)) { fprintf(stderr, "read\n"); zpl_file_close(&fin); free(data); return 1; }
+            p += c; r -= c;
         }
     }
-    in[n] = 0;  /* padding for the last odd symbol */
+    data[n] = 0;  /* padding for last odd symbol */
     zpl_file_close(&fin);
 
-    uint32_t raw_freq[ALPHABET_12];
-    memset(raw_freq, 0, sizeof(raw_freq));
-    for (size_t i = 0; i < n; i++) raw_freq[in[i]]++;
-
+    uint32_t raw[256] = {0};
+    for (size_t i = 0; i < n; i++) raw[data[i]]++;
     model12_t M;
-    int is_rle = model12_build(&M, raw_freq);
-    if (is_rle < 0) { fprintf(stderr, "model_build\n"); free(in); return 1; }
+    int is_rle = model12_build(&M, raw);
+    if (is_rle < 0) { fprintf(stderr, "model\n"); free(data); return 1; }
 
     zpl_file fout;
-    if (zpl_file_create(&fout, argv[2])) { fprintf(stderr, "fopen output\n"); free(in); return 1; }
-
+    if (zpl_file_create(&fout, argv[2])) { fprintf(stderr, "open out\n"); free(data); return 1; }
     uint8_t flags = (uint8_t)((!!is_rle) | 0x02);
     uint8_t rle_sym = (uint8_t)M.cums[1];
-    uint8_t sig[4] = { 'r', '4', (uint8_t)flags, rle_sym };
-    zpl_file_write(&fout, sig, sizeof(sig));
-    zpl_file_write(&fout, &n64, sizeof(n64));
+    uint8_t sig[4] = { 'r', '4', flags, rle_sym };
+    zpl_file_write(&fout, sig, 4);
+    zpl_file_write(&fout, &n, 8);
 
     zpl_u64 t0xx = zpl_time_rel_ms() + 100, d0 = zpl_rdtsc();
     while (zpl_time_rel_ms() < t0xx);
-    zpl_u64 rdtsc_freq = (zpl_rdtsc() - d0) * 10;
-    printf("CPU freq = %1.1f Mhz\n", rdtsc_freq / 1000000.0f);
+    zpl_u64 freq = (zpl_rdtsc() - d0) * 10;
+    printf("CPU freq = %1.1f Mhz\n", freq / 1000000.0f);
 
     if (is_rle) {
         zpl_file_close(&fout);
-        printf("ENCODE-RC24-2WAY OK (RLE, sym=0x%02X)\n", rle_sym);
-        printf("  in:  %zu bytes\n", n);
-        printf("  out: 12 bytes\n");
-        free(in);
-        return 0;
+        printf("ENCODE-RC24S2W OK (RLE)\n  in: %" PRIu64 "\n  out: 12\n", n);
+        free(data); return 0;
     }
 
     zpl_file_write(&fout, M.cums + 1, sizeof(M.cums[0]) * ALPHABET_12);
 
-    size_t cap0 = n / 2 + 1024;
-    size_t cap1 = n / 2 + 1024;
-    uint8_t *s0 = (uint8_t *)malloc(cap0);
-    uint8_t *s1 = (uint8_t *)malloc(cap1);
-    if (!s0 || !s1) { fprintf(stderr, "malloc\n"); zpl_file_close(&fout); free(in); return 1; }
+    uint16_t cum_tbl[256], freq_tbl[256];
+    for (int sym = 0; sym < 256; sym++) {
+        cum_tbl[sym]  = M.cums[sym];
+        freq_tbl[sym] = (uint16_t)(M.cums[sym + 1] - M.cums[sym]);
+    }
 
-    rc24_enc_t e0, e1;
-    rc24_enc_init(&e0, s0, cap0);
-    rc24_enc_init(&e1, s1, cap1);
+    size_t cap = n / N + n / 50 + 4096;
+    uint8_t *shared = calloc(cap * N + 16, 1);
+    if (!shared) { fprintf(stderr, "malloc\n"); free(data); return 1; }
+    size_t spos[N];
+    uint32_t elow[N], erange[N];
+    for (int s = 0; s < N; s++) { spos[s] = 0; elow[s] = 0; erange[s] = RC24_MASK; }
 
     zpl_u64 total_ticks = 0;
     size_t i = 0;
     while (i < n) {
-        size_t block = zpl_min(n - i, (size_t)PROGRESS_BLOCK);
-        block &= ~1u;  /* keep even */
+        size_t blk = (size_t)zpl_min((zpl_i64)(n - i), (zpl_i64)PROGRESS_BLOCK);
+        blk &= ~1u;
         zpl_u64 t0 = zpl_rdtsc();
-        for (size_t k = 0; k < block; k += 2) {
-            uint8_t sym0 = in[i + k];
-            uint8_t sym1 = in[i + k + 1];
-            uint16_t c0 = M.cums[sym0], f0 = (uint16_t)(M.cums[sym0 + 1] - M.cums[sym0]);
-            uint16_t c1 = M.cums[sym1], f1 = (uint16_t)(M.cums[sym1 + 1] - M.cums[sym1]);
-            rc24_enc_step(&e0, c0, f0);
-            rc24_enc_step(&e1, c1, f1);
+        for (size_t k = 0; k < blk; k += 2) {
+            uint8_t sym0 = data[i + k];
+            uint8_t sym1 = data[i + k + 1];
+            uint16_t c0 = cum_tbl[sym0], f0 = freq_tbl[sym0];
+            uint16_t c1 = cum_tbl[sym1], f1 = freq_tbl[sym1];
+
+            elow[0] += c0 * (erange[0] /= RC24_TOTAL);
+            erange[0] *= f0;
+            while (1) {
+                uint32_t diff = elow[0] ^ (elow[0] + erange[0]);
+                if (diff < RC24_TOP) {
+                } else if (erange[0] < RC24_BOT) {
+                    erange[0] = -elow[0] & (RC24_BOT - 1);
+                } else {
+                    break;
+                }
+                shared[spos[0] * N + 0] = (uint8_t)(elow[0] >> 16);
+                spos[0]++;
+                erange[0] <<= 8;
+                elow[0] = (elow[0] << 8) & RC24_MASK;
+            }
+
+            elow[1] += c1 * (erange[1] /= RC24_TOTAL);
+            erange[1] *= f1;
+            while (1) {
+                uint32_t diff = elow[1] ^ (elow[1] + erange[1]);
+                if (diff < RC24_TOP) {
+                } else if (erange[1] < RC24_BOT) {
+                    erange[1] = -elow[1] & (RC24_BOT - 1);
+                } else {
+                    break;
+                }
+                shared[spos[1] * N + 1] = (uint8_t)(elow[1] >> 16);
+                spos[1]++;
+                erange[1] <<= 8;
+                elow[1] = (elow[1] << 8) & RC24_MASK;
+            }
         }
         total_ticks += zpl_rdtsc() - t0;
-        i += block;
+        i += blk;
         if (!no_progress) {
             printf("\r                      \r%" PRIu64 " / %" PRIu64 "  (%3.1f%%)",
-                   (uint64_t)i, (uint64_t)n, 100.0 * (double)i / (double)n);
+                   (uint64_t)i, n, 100.0 * (double)i / (double)n);
             fflush(stdout);
         }
     }
-    rc24_enc_flush(&e0);
-    rc24_enc_flush(&e1);
     if (!no_progress) printf("\n");
 
-    uint32_t stream0_len = (uint32_t)rc24_enc_size(&e0);
-    uint32_t stream1_len = (uint32_t)rc24_enc_size(&e1);
+    for (int s = 0; s < N; s++) {
+        for (int j = 0; j < 3; j++) {
+            shared[spos[s] * N + s] = (uint8_t)(elow[s] >> 16);
+            spos[s]++; elow[s] <<= 8;
+        }
+    }
 
-    zpl_file_write(&fout, &stream0_len, sizeof(stream0_len));
-    zpl_file_write(&fout, &stream1_len, sizeof(stream1_len));
-    zpl_file_write(&fout, s0, stream0_len);
-    zpl_file_write(&fout, s1, stream1_len);
+    size_t max_len = 0;
+    for (int s = 0; s < N; s++) if (spos[s] > max_len) max_len = spos[s];
+
+    uint32_t max_len_u32 = (uint32_t)max_len;
+    zpl_file_write(&fout, &max_len_u32, 4);
+    zpl_file_write(&fout, shared, max_len * N);
 
     zpl_i64 out_bytes = zpl_file_size(&fout);
     zpl_file_close(&fout);
-    free(in); free(s0); free(s1);
+    free(shared); free(data);
 
-    uint64_t enc_ms = (rdtsc_freq > 0) ? (total_ticks * 1000 / rdtsc_freq) : 0;
-    double mb_s = (enc_ms > 0) ? (double)n / (enc_ms * 1048576.0 / 1000.0) : 0.0;
-    double bpb = (double)(out_bytes * 8) / (double)n;
-    uint32_t ticks_per_symbol = (n > 0) ? (uint32_t)(total_ticks / n) : 0;
+    uint32_t tps = n ? (uint32_t)(total_ticks / n) : 0;
+    uint64_t ms = freq ? (uint64_t)(total_ticks * 1000 / freq) : 0;
+    double mb_s = ms ? (double)n / (ms * 1048576.0 / 1000.0) : 0.0;
 
-    printf("ENCODE-RC24-2WAY OK\n");
+    printf("ENCODE-RC24S2W OK\n");
     printf("  input     : %s\n", argv[1]);
-    printf("  in_size   : %zu bytes\n", n);
+    printf("  in_size   : %" PRIu64 " bytes\n", n);
     printf("  out_size  : %" PRIi64 " bytes\n", out_bytes);
-    printf("  bpb       : %.3f\n", bpb);
+    printf("  bpb       : %.3f\n", (double)(out_bytes * 8) / (double)n);
     printf("  ratio_pct : %.2f\n", 100.0 * (double)out_bytes / (double)n);
-    printf("  encode_ms : %" PRIu64 "\n", enc_ms);
+    printf("  encode_ms : %" PRIu64 "\n", ms);
     printf("  encode_mbs: %.1f\n", mb_s);
-    printf("  enc_ticks : %u\n", ticks_per_symbol);
+    printf("  enc_ticks : %u\n", tps);
     return 0;
 }
