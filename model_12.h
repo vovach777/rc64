@@ -294,48 +294,22 @@ static inline uint32_t rc_fast_div(uint32_t code, uint32_t r) {
  * In RC24, r = range >> 12 ∈ [16, 4096) — at most 12 bits.
  * No CLZ normalization needed: index directly by r.
  *
- * LUT[r] = floor(2^32 / r)  (32-bit multiplier, 4096 entries × 4 = 16 KB)
- * q0  = (code * mult) >> 32  — underestimates by ≤ 1
- * One upward correction makes it exact.
- * ~14c latency on Haswell vs divl ~22-27c.
+ * Store floor(2^64 / r) and use a 64x64->128 unsigned multiply.  The high
+ * 64 bits of the product are the exact quotient.  No correction step.
  *
- * Also includes an SSE `_mm_rcp_ss` Newton-Raphson variant used in the RC24
- * decoder.  It is faster on Haswell than the integer LUT and is enabled by
- * default for RC24 when SSE intrinsics are available.
+ * LUT: 4096 entries × 8 = 32 KB, aligned to 128 bytes for cache-line
+ * friendliness.
  * ========================================================================= */
 #define RCDIV24_LUT_SIZE 4096u
-static uint32_t g_rc_div24_lut[RCDIV24_LUT_SIZE];
+static uint64_t g_rc_div24_lut[RCDIV24_LUT_SIZE] __attribute__((aligned(128)));
 
 static inline void rc_div24_lut_init(void) {
     for (uint32_t i = 16; i < RCDIV24_LUT_SIZE; ++i)
-        g_rc_div24_lut[i] = (uint32_t)(((uint64_t)1 << 32) / i);
+        g_rc_div24_lut[i] = (~0ULL) / i + 1;   /* ceil(2^64 / i) */
 }
 
 static inline uint32_t rc_fast_div24(uint32_t code, uint32_t r) {
-    uint32_t mult = g_rc_div24_lut[r];
-    uint32_t q    = (uint32_t)(((uint64_t)code * (uint64_t)mult) >> 32);
-    q += (uint32_t)((uint64_t)(q + 1) * r <= code);
-    return q;
+    return (uint32_t)(((__uint128_t)code * g_rc_div24_lut[r]) >> 64);
 }
-
-#if defined(__SSE__)
-#include <xmmintrin.h>
-/* RC24 division via SSE reciprocal: q = floor((code - low) / r), r >= 16.
- * One Newton-Raphson iteration + one integer upward correction.
- * Requires xmmintrin.h; enabled automatically on x86/x86_64. */
-static inline uint32_t rc_fast_div24_rcp(uint32_t code, uint32_t r) {
-    __m128 fr  = _mm_set_ss((float)r);
-    __m128 rcp = _mm_rcp_ss(fr);
-    __m128 tmp = _mm_sub_ss(_mm_set_ss(2.0f), _mm_mul_ss(fr, rcp));
-    rcp        = _mm_mul_ss(rcp, tmp);
-    __m128 fd  = _mm_set_ss((float)code);
-    __m128 fq  = _mm_mul_ss(fd, rcp);
-    uint32_t q = (uint32_t)_mm_cvttss_si32(fq);
-    q += (uint32_t)((uint64_t)(q + 1) * r <= code);
-    return q;
-}
-#else
-#define rc_fast_div24_rcp(code, r) rc_fast_div24((code), (r))
-#endif
 
 #endif /* MODEL_12_H */

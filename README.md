@@ -106,8 +106,8 @@ the `rdtsc` frequency calibration jitters ±0.5% per run; the median is stable).
 |---|---|---|---|---|---|---|
 | 64-bit RC (Schindler) | 14-bit | 644,975,728 (64.50%) | 5.160 | 250 MB/s (9 t/s) | 56 MB/s (42 t/s) | 21.9 s |
 | 32-bit RC | 12-bit | 648,568,754 (64.86%) | 5.189 | 204 MB/s (11 t/s) | 68 MB/s (35 t/s) | 19.6 s |
-| **RC24 single (LUT24)** | **12-bit** | **648,987,394 (64.90%)** | **5.192** | **~136 MB/s (17 t/s)** | **~62 MB/s (38 t/s)** | **~13.7 s** |
-| **RC24S N=4 shared (LUT24)** | **12-bit** | **648,987,394 (64.90%)** | **5.192** | **~104 MB/s (22 t/s)** | **~59 MB/s (40 t/s)** | **~14.1 s** |
+| **RC24 scalar** | **12-bit** | **680,524,941 (68.05%)** | **5.444** | **130 MB/s (18 t/s)** | **77 MB/s (30 t/s)** | **~12.5 s** |
+| **RC24 2-way** | **12-bit** | **680,880,120 (68.09%)** | **5.447** | **124 MB/s (19 t/s)** | **86–90 MB/s (26–27 t/s)** | **~11.4 s** |
 | rANS (4-way interleave) | 14-bit | 645,067,056 (64.51%) | 5.161 | 200 MB/s (11 t/s) | **416 MB/s (5 t/s)** | 7.4 s |
 | FSE tANS (reference) | 14-bit | 644,780,828 (64.48%) | 5.158 | 372 MB/s (6 t/s) | 349 MB/s (6 t/s) | 5.6 s |
 | HUF / Huff0 (reference) | per-block | 646,646,919 (64.66%) | 5.173 | **569 MB/s (4 t/s)** | **651 MB/s (3 t/s)** | **3.3 s** |
@@ -132,16 +132,16 @@ part of the measurement, by design — no tree extraction). Incompressible block
 the others. The "4X" in Huff0 is **4 interleaved bitstreams within one thread**
 (ILP/SIMD), not OS threads — neither HUF nor FSE spawn threads.
 
-- **RC24 note**: both single-stream (`rc24_decode`) and N=4 shared-buffer
-  (`rc24s_decode`) use the 12-bit direct LUT (`rc_fast_div24`) by default.
-  We also benchmarked two alternate division backends on this Haswell
-  i7-4870HQ:
-  - Plain integer division (`-DUSE_INT_DIV24`): ~49 MB/s single-stream,
-    ~59 MB/s in RC24S.  Slower than LUT on single-stream, ties on N=4.
-  - SSE `_mm_rcp_ss` Newton-Raphson (`-DUSE_SSE_RCP24`): ~42 MB/s
-    single-stream, ~54 MB/s in RC24S.  Slower than LUT on both.
-  The LUT remains the default; the alternate paths are kept as compile-time
-  options for other CPUs.
+- **RC24 note**: the scalar and 2-way RC24 decoders use a 64-bit exact
+  reciprocal LUT (`floor(2^64 / r)` in `model_12.h`) with a `__uint128_t`
+  multiply and a 64-bit high-product shift.  This eliminates the correction
+  step that slowed the earlier 32-bit LUT and SSE-rcp experiments.  Both
+  paths share a human-readable Subbotin renorm loop (no nested boolean
+  expression) and at least 1024 bytes of zero padding after each stream,
+  so the hot decoder loop reads bytes unconditionally.
+  - 2-way interleave splits even/odd symbols into two independent RC24
+    streams decoded in lock-step; it gives ~+15% decode throughput over the
+    scalar decoder on this Haswell i7-4870HQ.
 
 - **Measurement fairness**: the FSE and rANS numbers are now measured with the
   *identical* scheme — 256 KB blocks, global model built once (untimed), in-core
@@ -229,16 +229,15 @@ The subbotin_magic branch — Subbotin aligned trim instead of carry propagation
 
 | File | Purpose |
 |---|---|
-| `rc24_codec.h` | RC24 24-bit carryless Subbotin codec (encoder + decoder). Default decoder division: 12-bit direct LUT (`rc_fast_div24`). Optional SSE reciprocal via `-DUSE_SSE_RCP24`. |
+| `rc24_codec.h` | RC24 24-bit carryless Subbotin codec (encoder + decoder). 64-bit exact reciprocal division; human-readable renorm. |
 | `rc24_encode.c` / `rc24_decode.c` | Single-stream RC24 tools (`.rc24`). |
-| `rc24s_encode.c` / `rc24s_decode.c` | RC24 N=4 shared-buffer interleaved tools (`.rc24s`). |
+| `rc24_2way_encode.c` / `rc24_2way_decode.c` | RC24 2-way interleaved tools (`.rc24.2w`). |
 | `rc32sub_codec.h` | RC32SUB 32-bit carryless Subbotin codec. |
 | `rc32sub_encode.c` / `rc32sub_decode.c` | Single-stream RC32SUB tools (`.rc32sub`). |
 | `roundtrip24.sh` | Roundtrip tests for single-stream RC24. |
-| `roundtrip24s.sh` | Roundtrip tests for RC24S shared-buffer N=4. |
+| `roundtrip24_2way.sh` | Roundtrip tests for RC24 2-way interleave. |
 | `roundtrip32sub.sh` | Roundtrip tests for RC32SUB. |
-| `test_rc24.c` | RC24 synthetic regression tests. |
-| `future_work.md` | Open research problems, including dynamic ring-based reservation for RC24 interleave. |
+| `future_work.md` | Open research problems (dynamic ring reservation, etc.). |
 | `rc_codec.h` | Inplace codec (encoder + decoder, always_inline). 64-bit Schindler. |
 | `model.h` | Static order-0 model (14 bit, total=16384). For the 64-bit engines (RC and rANS). |
 | `rc_encode.c` | Encoder (64-bit range coder). |

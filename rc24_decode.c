@@ -89,10 +89,10 @@ int main(int argc, char **argv) {
     printf("CPU freq = %1.1f Mhz\n", rdtsc_freq / 1000000.0f);
 
     /* load stream into memory */
-    size_t stream_len = (size_t)ac_data_len + 16;
+    size_t stream_len = (size_t)ac_data_len + 1024;
     uint8_t *stream = (uint8_t *)malloc(stream_len);
     if (!stream) { fprintf(stderr, "malloc\n"); zpl_file_close(&fin); return 1; }
-    memset(stream + ac_data_len, 0, 16);  /* padding for safe reads past end */
+    memset(stream + ac_data_len, 0, 1024);  /* padding for safe reads past end */
     {
         uint8_t *p = stream; int64_t rem = ac_data_len;
         while (rem > 0) {
@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
     if (zpl_file_create(&fout, argv[2])) { fprintf(stderr, "fopen output\n"); free(stream); return 1; }
 
     rc24_dec_t rd;
-    rc24_dec_init(&rd, stream, (size_t)ac_data_len);
+    rc24_dec_init(&rd, stream);
 
     zpl_u64 total_ticks = 0;
     size_t i = 0;
