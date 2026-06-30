@@ -41,7 +41,7 @@ typedef struct { uint32_t code, range, low; const uint8_t *in; size_t len, pos; 
 static inline void rc24_dec_init(rc24_dec_t *d, const uint8_t *in, size_t len) {
     d->in=in; d->len=len; d->pos=0; d->range=RC24_MASK; d->low=0; d->code=0;
     int i; for (i=0;i<3;i++)
-        d->code = ((d->code << 8) | (uint32_t)((d->pos<d->len)?d->in[d->pos++]:0)) & RC24_MASK;
+        d->code = ((d->code << 8) | (uint32_t)d->in[d->pos++]) & RC24_MASK;
 }
 static inline uint32_t rc24_dec_get_cum(rc24_dec_t *d) {
     d->range >>= 12;   /* range / 4096 */
@@ -58,7 +58,7 @@ static inline void rc24_dec_step(rc24_dec_t *d, uint32_t cumFreq, uint32_t freq)
     d->range *= freq;
     while ((d->low ^ (d->low + d->range)) < RC24_TOP ||
            (d->range < RC24_BOT && ((d->range = -d->low & (RC24_BOT - 1)), 1))) {
-        d->code  = ((d->code << 8) | (uint32_t)((d->pos<d->len)?d->in[d->pos++]:0)) & RC24_MASK;
+        d->code  = ((d->code << 8) | (uint32_t)d->in[d->pos++]) & RC24_MASK;
         d->range <<= 8;
         d->low   = (d->low << 8) & RC24_MASK;
     }
