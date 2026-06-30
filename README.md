@@ -134,14 +134,12 @@ the others. The "4X" in Huff0 is **4 interleaved bitstreams within one thread**
 
 - **RC24 note**: the scalar and 2-way RC24 decoders use a 64-bit exact
   reciprocal LUT (`floor(2^64 / r)` in `model_12.h`) with a `__uint128_t`
-  multiply and a 64-bit high-product shift.  This eliminates the correction
-  step that slowed the earlier 32-bit LUT and SSE-rcp experiments.  Both
-  paths share a human-readable Subbotin renorm loop (no nested boolean
-  expression) and at least 1024 bytes of zero padding after each stream,
-  so the hot decoder loop reads bytes unconditionally.
-  - 2-way interleave splits even/odd symbols into two independent RC24
-    streams decoded in lock-step; it gives ~+15% decode throughput over the
-    scalar decoder on this Haswell i7-4870HQ.
+  multiply and a 64-bit high-product shift.  Both paths share a human-readable
+  Subbotin renorm loop (no nested boolean expression) and at least 1024 bytes
+  of zero padding after each stream, so the hot decoder loop reads bytes
+  unconditionally.  2-way interleave splits even/odd symbols into two
+  independent RC24 streams decoded in lock-step; it gives ~+15% decode
+  throughput over the scalar decoder on this Haswell i7-4870HQ.
 
 - **Measurement fairness**: the FSE and rANS numbers are now measured with the
   *identical* scheme — 256 KB blocks, global model built once (untimed), in-core
