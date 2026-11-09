@@ -533,3 +533,46 @@ tools are parameterized via `-DNINTER=n` to re-measure any N).
 The 2-way encoder issues bytes for stream 0 and stream 1 side by side into the
 shared buffer; the decoder reads each stream forward through the same layout.  No
 separate merge or swizzle step is needed.
+---
+
+## RC24 reserve-ahead N-way (additive)
+
+Added without removing or changing any existing codec, target or benchmark.
+This is the `llcomp/rc` (`Buf::take`) answer to the open problem in
+`future_work.md`: instead of the fixed `shared[k * N + i]` compromise, slots
+are reserved dynamically in global renorm-event order.
+
+```
+./rc24_reserve_encode <input> <output.rc24rsv> [N=1..8]
+./rc24_reserve_decode <output.rc24rsv> <output>
+make roundtrip24_reserve    # correctness, N=1,2,4,8, all 6 datasets
+make bench_rc24_reserve     # enc/dec MB/s, bpb, slots, cut frequency
+```
+
+**Format `.rc24rsv`**: `'r','4','R',N` | `uint64 orig_len` | `flags` | `rle_sym`
+| `cum[1..256]` | `uint32 total_slots` | the buffer. `total_slots` is exactly
+`Buf.next`; there is **no `max_stream_len` and no per-stream sizes/offsets**.
+The decoder walks the whole buffer with one `nx` pointer, in the same global
+order in which the encoder called `take()`.
+
+**Engine**: `rc24_reserve.h` ports `llcomp_rc.hpp:222-249` verbatim — 64-bit
+`low`, 32-bit `range`, `TOP = 2^24`, 4 pending bytes in a FIFO of reserved
+slots, hybrid carry with the rare `0xFFFFFFFF` Subbotin trim. `init()` reserves
+4 slots per stream up front; the delayed-carry FIFO and `flush()` back-fill
+them later, which is exactly the "reserve now, write last" behaviour that a
+plain FIFO ring could not express. The 12-bit static model is scaled by 8 into
+a `2^15` CDF so no numerical constant changes.
+
+**Diagnostics**: `renorms`, `cuts`, `cuts_per_1M_renorms`, `takes`, `slots`,
+`nx_used`. This turns "the cut is incredibly rare" into a measured number and
+makes the `Δbpb` cost of the trim quantifiable.
+
+| File | Role |
+|---|---|
+| `rc24_reserve.h` | reserve-ahead buffer + encoder/decoder core + counters |
+| `rc24_reserve_encode.c` / `rc24_reserve_decode.c` | N-way tools |
+| `roundtrip24_reserve.sh` | correctness, N=1/2/4/8 |
+| `bench_rc24_reserve.sh` | median-of-3 throughput table vs fixed layout |
+
+The fixed `rc24_2way_encode.c` / `rc24_2way_decode.c` / `roundtrip24_2way.sh`
+remain untouched and are used as the reference row in the benchmark.

@@ -227,3 +227,27 @@ add_custom_target(roundtrip_huf
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Running roundtrip tests on all datasets (HUF engine)"
 )
+# --- ADDITIVE: RC24 reserve-ahead N-way shared buffer (llcomp/rc Buf::take) ---
+# All existing targets above are kept. This block only ADDS.
+add_executable(rc24_reserve_encode rc24_reserve_encode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc24_reserve_encode ${MATH_LIBRARY})
+endif()
+add_executable(rc24_reserve_decode rc24_reserve_decode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc24_reserve_decode ${MATH_LIBRARY})
+endif()
+
+add_custom_target(roundtrip24_reserve
+    COMMAND bash ${CMAKE_SOURCE_DIR}/roundtrip24_reserve.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc24_reserve_encode rc24_reserve_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Roundtrip tests for reserve-ahead RC24 (N=1,2,4,8)"
+)
+
+add_custom_target(bench_rc24_reserve
+    COMMAND bash ${CMAKE_SOURCE_DIR}/bench_rc24_reserve.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc24_reserve_encode rc24_reserve_decode rc24_2way_encode rc24_2way_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Reserve-ahead vs fixed-layout benchmark (N=1,2,4,8, median of 3)"
+)
