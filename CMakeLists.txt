@@ -251,3 +251,29 @@ add_custom_target(bench_rc24_reserve
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "Reserve-ahead vs fixed-layout benchmark (N=1,2,4,8, median of 3)"
 )
+
+# --- ADDITIVE: RC22 reserve-ahead (22-bit [2][8][12] + 1024-slot inverse LUT) ---
+# Faithful port of rc22/rc22_bitbuf.c numeric kernel + Buf::take reservation.
+# All existing targets above are kept. This block only ADDS.
+add_executable(rc22_reserve_encode rc22_reserve_encode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc22_reserve_encode ${MATH_LIBRARY})
+endif()
+add_executable(rc22_reserve_decode rc22_reserve_decode.c)
+if(MATH_LIBRARY)
+    target_link_libraries(rc22_reserve_decode ${MATH_LIBRARY})
+endif()
+
+add_custom_target(roundtrip22_reserve
+    COMMAND bash ${CMAKE_SOURCE_DIR}/roundtrip22_reserve.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc22_reserve_encode rc22_reserve_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Roundtrip tests for 22-bit reserve-ahead (N=1,2,4,8, all datasets + edge cases)"
+)
+
+add_custom_target(bench_rc22_reserve
+    COMMAND bash ${CMAKE_SOURCE_DIR}/bench_rc22_reserve.sh ${CMAKE_BINARY_DIR}
+    DEPENDS rc22_reserve_encode rc22_reserve_decode rc24_reserve_encode rc24_reserve_decode rc24_2way_encode rc24_2way_decode gen_data
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "22-bit vs 24-bit reserve-ahead vs fixed layout (median of 3)"
+)

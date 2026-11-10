@@ -576,3 +576,55 @@ makes the `Δbpb` cost of the trim quantifiable.
 
 The fixed `rc24_2way_encode.c` / `rc24_2way_decode.c` / `roundtrip24_2way.sh`
 remain untouched and are used as the reference row in the benchmark.
+
+## RC22 reserve-ahead (additive, 22-bit `[2][8][12]`)
+
+Second additive variant. It answers the owner's observation that a **22-bit
+range needs less memory for the reciprocal division table**: `r_max =
+(TOP-1)/TOTAL = (2^22-1)/4096 = 1023`, so the inverse LUT is exactly **1024
+`uint32_t` entries = 4 KiB**, addressed with one `32x32->64` multiply and no
+128-bit arithmetic. The 24-bit state of `rc64` instead needs the 4096-slot
+`uint64` table plus `__uint128_t` (`rc_fast_div24` in `model_12.h`).
+
+The numeric kernel is a faithful port of the proven `rc22/rc22_bitbuf.c`:
+`BITS=22`, `TOP=2^22`, `TOTAL=4096` (the static 12-bit model is used **without**
+the x8 scaling that `rc24_reserve` needs), `TARGET_MSB=14`, CLZ-based O(1)
+renorm with a variable `shift`, the `low + r*TOTAL < TOP` fast path, and the
+zero-waste bitwise bypass with `range = min(TOP-low, r)`. The decoder is
+division-free: `inv_r_lut[r] = floor(2^32/r)` plus a single `+1` correction
+makes the quotient exact.
+
+Reserve-ahead uses the same `Buf::take` idiom. `init()` reserves
+`R22_INITBYTES = 3` slots (3 bytes cover 22 bits); the first 3 emitted bytes
+land there and every later byte takes one fresh slot in global event order.
+Streams are processed in stream order, so each occupies one contiguous run and
+the decoder walks the whole buffer with **one global `nx`** — no per-stream
+sizes/offsets/`max_stream_len`. The alignment invariant is exact: for a stream
+with `S` total renorm bits the encoder emits `E = ceil((S+22)/8)` bytes, while
+the decoder reads `3 + R = 3 + ceil((S-2)/8) = E` bytes, so `nx` lands
+precisely on the next stream's first slot (`nx_used == total_slots`).
+
+```
+./rc22_reserve_encode <input> <output.rc22rsv> [N=1..8]
+./rc22_reserve_decode <output.rc22rsv> <output>
+make roundtrip22_reserve    # N=1,2,4,8 x 6 datasets + size sweep + RLE/edge cases
+make bench_rc22_reserve     # 22-bit vs 24-bit reserve-ahead vs fixed layout
+```
+
+**Format `.rc22rsv`**: `'r','2','R',N` | `uint64 orig_len` | `flags` |
+`rle_sym` | `cum[1..256]` | `uint32 total_slots` | the buffer.
+
+**Diagnostics**: `renorms`, `bypass`, `bypass_steps`, `takes`, `slots`,
+`nx_used`. Bypass triggers are counted so the cost of the zero-waste radix
+path is measurable rather than assumed.
+
+| File | Role |
+|---|---|
+| `rc22_reserve.h` | 22-bit kernel + 1024-slot inverse LUT + reserved-slot buffer |
+| `rc22_reserve_encode.c` / `rc22_reserve_decode.c` | N-way tools |
+| `roundtrip22_reserve.sh` | correctness suite |
+| `bench_rc22_reserve.sh` | median-of-3 throughput/compression comparison |
+
+`rc22_reserve` is a **static order-0 test**, like the rest of `rc64`. No
+adaptive CDF, no `llcomp/rc` image context, and no third benchmark engine:
+all existing variants stay, only new ones are added.
