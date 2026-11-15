@@ -129,6 +129,16 @@ if(MATH_LIBRARY)
     target_link_libraries(bench_dec ${MATH_LIBRARY})
 endif()
 
+# --- rANS16x16: 16 / 32 / 64 word-rANS states (vector pairs rotated), AVX2 decode (fNBLI scheme), -march=native ---
+foreach(L 16 32 64)
+    add_executable(bench_enc16_x${L} bench_enc16.cpp)
+    add_executable(bench_dec16_x${L} bench_dec16.cpp)
+    foreach(t bench_enc16_x${L} bench_dec16_x${L})
+        target_compile_definitions(${t} PRIVATE R16_LANES=${L})
+        target_compile_options(${t} PRIVATE -march=native)
+    endforeach()
+endforeach()
+
 # --- rANS N-way interleave benchmark (enc+dec throughput vs N=1..5) ---
 add_custom_target(bench_rans
     COMMAND sh ${CMAKE_SOURCE_DIR}/bench_rans.sh ${CMAKE_BINARY_DIR}

@@ -1,5 +1,7 @@
 #!/bin/sh
-# rANS N-way interleave benchmark: encode + decode throughput vs N=1..5.
+# rANS N-way interleave benchmark: encode + decode throughput vs N=1..5,
+# plus rANS16x16 (16 / 32 / 64 word-rANS states in AVX2 vector pairs rotated
+# round-robin; x16 is the fNBLI scheme).
 #
 # Builds bench_enc_<n>/bench_dec_<n> for each N, runs each min-of-5 (min damps
 # background noise), prints a table. The per-N streams share the production
@@ -24,6 +26,12 @@ for N in 1 2 3 4 5; do
     $CC $CFLAGS -DNINTER=$N "$SRC/bench_enc.cpp" -o "$BIN/bench_enc_$N"
     $CC $CFLAGS -DNINTER=$N "$SRC/bench_dec.cpp" -o "$BIN/bench_dec_$N"
 done
+# x16 / x32 need the target ISA (AVX2 for the vector decoder; without it a scalar loop decodes)
+ARCH="${ARCH:--march=native}"
+for L in 16 32 64; do
+    $CC $CFLAGS $ARCH -DR16_LANES=$L "$SRC/bench_enc16.cpp" -o "$BIN/bench_enc16_x$L"
+    $CC $CFLAGS $ARCH -DR16_LANES=$L "$SRC/bench_dec16.cpp" -o "$BIN/bench_dec16_x$L"
+done
 
 # print min ticks/sym over 5 runs of a binary
 min5() {
@@ -44,5 +52,12 @@ for N in 1 2 3 4 5; do
     d=$(min5 "$BIN/bench_dec_$N" "$BIN/bench_rans/o$N.rans" "$BIN/bench_rans/d$N.out" "$ORIG")
     tot=$(awk 'BEGIN{printf "%.2f", '"$e"' + '"$d"'}')
     printf '%-4s %12s %12s %14s\n' "$N" "$e" "$d" "$tot"
+done
+for L in 16 32 64; do
+    "$BIN/bench_enc16_x$L" "$ORIG" "$BIN/bench_rans/x$L.r16" >/dev/null 2>&1
+    e=$(min5 "$BIN/bench_enc16_x$L" "$ORIG" "$BIN/bench_rans/x$L.r16")
+    d=$(min5 "$BIN/bench_dec16_x$L" "$BIN/bench_rans/x$L.r16" "$BIN/bench_rans/dx$L.out" "$ORIG")
+    tot=$(awk 'BEGIN{printf "%.2f", '"$e"' + '"$d"'}')
+    printf '%-4s %12s %12s %14s\n' "x$L" "$e" "$d" "$tot"
 done
 echo "done"
