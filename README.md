@@ -487,9 +487,11 @@ Encoder and decoder peak at *different* N (measured, min of 5 runs, 32 MB
 | 4 | 11.01 | **6.93** | **17.94** |
 | 5 | 13.02 |  8.32 | 21.34 |
 
-- The **encoder** is throughput-bound: 2-way ILP already hides the reciprocal
+- ~~The **encoder** is throughput-bound: 2-way ILP already hides the reciprocal
   `mul`, so it peaks at N=2 and degrades after (N−1 rotation moves/symbol +
-  `buf_head` contention).
+  `buf_head` contention).~~ **Wrong (2026-11-27):** the decline after N=2 was
+  branch mispredicts on the renorm emit, not throughput. With the branchless
+  renorm (below) the encoder also peaks at N=4.
 - The **decoder** is latency-bound, so it keeps improving to N=4 (−30% vs N=2);
   N=5 spills and regresses.
 
@@ -507,12 +509,13 @@ Encoder and decoder peak at *different* N (measured, min of 5 runs, 32 MB
 | 5 | 6.59 | 4.83 |
 
 With one state the longer dependency chain loses; from N = 3 the removed mispredicts win, and at the
-production N = 4 the encoder is 28% faster (the "encoder peaks at N = 2" note above was the mispredicts).
+production N = 4 the encoder is 28% faster: the "encoder peaks at N = 2" note above is crossed out.
 
 N is shared by the stream format (N flush pairs per block), so it is a
 compromise. **N=4 is hardcoded** in the production codec: best combined
-throughput (decoder's −3 t/sym outweighs the encoder's +1) and the decoder's
-peak. Switch to N=2 for encode-heavy workloads (the `bench_enc`/`bench_dec`
+throughput ~~(decoder's −3 t/sym outweighs the encoder's +1)~~ and the decoder's
+peak ~~. Switch to N=2 for encode-heavy workloads~~ — with the branchless renorm
+N=4 is the encoder's peak too, so it is no longer a compromise (the `bench_enc`/`bench_dec`
 tools are parameterized via `-DNINTER=n` to re-measure any N).
 
 
