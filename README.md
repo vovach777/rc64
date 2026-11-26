@@ -500,6 +500,35 @@ peak. Switch to N=2 for encode-heavy workloads (the `bench_enc`/`bench_dec`
 tools are parameterized via `-DNINTER=n` to re-measure any N).
 
 
+### rANS16x16: word-rANS with 16 / 32 / 64 states (fNBLI scheme)
+
+`rans16x16_codec.h` (written from scratch after fNBLI's scheme): 32-bit states, L = 2^16, at most one
+16-bit renorm word per symbol, 14-bit static model, symbol k on state k % LANES. The decoder keeps 16
+states per pair of `__m256i` (two gathers per 8 lanes, renorm words expanded by one permutation); with 32 /
+64 states the pairs are rotated round-robin so the gathers of one pair overlap the work of the next.
+The encoder is scalar and superscalar by construction (consecutive symbols hit different states).
+
+**Branchless encoder renorm.** The emit-or-not decision is unpredictable (~ every other symbol for a
+16-bit renorm), so `if (x >= x_max) { *--head = x; x >>= 16; }` mispredicts all the time. The encoder now
+always stores the word at `head[-1]` and moves `head` by the flag (`head -= e; x >>= e << 4`): same
+stream bytes, no branch. `-DR16_BRANCHY` keeps the old code for comparison.
+
+Intel Xeon @ 2.3 GHz (AVX-512 VBMI host, AVX2 decode path), clang -O3 -march=native, 32 MB "english",
+`bench_rans.sh`, min of 5, ticks/sym:
+
+| states | enc, branch | **enc, branchless** | dec (AVX2) | enc+dec |
+|---|---|---|---|---|
+| x16 | 7.84 | **3.03** | 3.66 | 6.69 |
+| x32 | 7.98 | **3.01** | 2.28 | 5.29 |
+| x64 | 8.12 | **3.02** | **1.61** | **4.63** |
+
+(branch column: 8 MB, `-mavx2`). Byte rANS64 N-way on the same run: best enc 5.16 (N=3), best dec 3.95
+(N=5), best enc+dec 10.22 (N=4) -- x64 word-rANS is 2.2x faster end to end. Streams of the branchless
+encoder are byte-identical to the branchy ones and verified by `bench_dec16` for x16 / x32 / x64.
+
+Build note: `R16_ROT` (16 states in one zmm, rotated per symbol: serial, 17.7 t/sym) is compiled only with
+`-DR16_ROT`; before, its `static_assert(LANES == 16)` broke x32 / x64 builds with `-march=native` on AVX-512.
+
 ## RC24 formats
 
 ### `.rc24` format (single-stream)

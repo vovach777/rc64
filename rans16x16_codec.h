@@ -14,7 +14,7 @@
  *     order (expand by a permutation of a 128-bit load, per 8-lane half).
  *     With LANES > 16 the P = LANES / 16 vector pairs are rotated round-robin:
  *     while one pair waits for its gathers, the next one is in flight.
- *   - encoder: scalar, division-free (ryg rans_byte reciprocal), walks the block
+ *   - encoder: scalar, division-free (ryg rans_byte reciprocal), branchless renorm, walks the block
  *     BACKWARDS and writes words BACKWARDS, so the decoder reads them forwards
  *     in exactly the order it needs (step by step, lane 0..LANES-1).
  *
@@ -23,7 +23,8 @@
  * is then at the next block (no length field, same as the rANS64 tools).
  *
  * Options: R16_LANES = 16 | 32 | 48 | 64, R16_SCALAR (scalar decode even with
- * AVX2), R16_NOGATHER (vector decode, but the two table lookups as scalar loads).
+ * AVX2), R16_NOGATHER (vector decode, but the two table lookups as scalar loads),
+ * R16_BRANCHY (encoder renorm with the old branch instead of the branchless store).
  * ========================================================================= */
 #ifndef RANS16X16_CODEC_H
 #define RANS16X16_CODEC_H
@@ -59,10 +60,19 @@ static inline void enc_sym_init(EncSym& s, uint32_t start, uint32_t freq) {
     }
 }
 
-/* encode one symbol into state x, words go to *--head */
+/* encode one symbol into state x, words go to *--head.
+   Branchless renorm (default): the word is always stored at head[-1] and head moves by the flag, so the
+   unpredictable "emit or not" costs no mispredict: x16..x64 encode 7.8-8.1 -> 3.2-3.3 ticks/sym, same
+   stream bytes. -DR16_BRANCHY restores the branch (for comparison). Needs one writable word below head:
+   the caller's buffer has slack in front of the block anyway (words are written backwards). */
 static inline void enc_put(uint32_t& x, const EncSym& s, uint16_t*& head) {
     const uint64_t x_max = (uint64_t(L >> SCALE) << 16) * s.freq;
+#ifdef R16_BRANCHY
     if (x >= x_max) { *--head = uint16_t(x); x >>= 16; }
+#else
+    const uint32_t e = uint32_t(x >= x_max);
+    head[-1] = uint16_t(x); head -= e; x >>= (e << 4);
+#endif
     const uint32_t q = uint32_t((uint64_t(x) * s.rcp) >> 32) >> s.shift;
     x = x + s.bias + q * s.cmpl;
 }
@@ -172,7 +182,7 @@ static inline const uint16_t* dec_block_avx2(uint8_t* out, size_t syms, const De
 }
 #endif
 
-#if defined(__AVX512F__)
+#if defined(R16_ROT) && defined(__AVX512F__)   /* only when asked: its static_assert broke x32/x64 builds with -march=native */
 /* R16_ROT: 16 states in ONE zmm register, one symbol at a time, the register rotated by one lane
    per symbol like the states of a superscalar interleave (lane 0 = current state, the updated state
    goes back in at lane 15). No mask, no lane expand: the renorm word is read by the scalar code. */
