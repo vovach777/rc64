@@ -85,6 +85,32 @@ namespace rANS
             return res;
         }
 
+        // Branchless variant of Rans64EncPut_no_div: the renorm word is always stored at head[-1] and
+        // head moves by the flag, so the emit-or-not decision costs no mispredict. Same stream as
+        // `if (auto r = Rans64EncPut_no_div(...)) *--head = *r;`. Needs one writable word below head.
+        inline void Rans64EncPut_no_div_to(uint32_t start, uint32_t freq, uint64_t rfreq, uint32_t scale_bits,
+                                           uint32_t*& head)
+        {
+            const uint64_t x_max = ((RANS64_L >> scale_bits) << (32U)) * freq;
+            const uint64_t e = uint64_t(state >= x_max);
+            head[-1] = uint32_t(state);
+            head -= e;
+            state >>= (e << 5);
+            if (freq == 1) [[unlikely]]
+            {
+                state = ((uint64_t)state << scale_bits) + start;
+            }
+            else
+            {
+                uint64_t q = (uint64_t)(((unsigned __int128)state * rfreq) >> 64);
+                uint64_t remainder = state - q * freq;
+                const uint64_t fix = uint64_t(remainder >= freq);   // branchless correction
+                remainder -= fix * freq;
+                q += fix;
+                state = (q << scale_bits) + remainder + start;
+            }
+        }
+
         auto RansEncPutBits(uint32_t val, uint32_t nbits)
         {
             assert(nbits <= 16);

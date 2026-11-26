@@ -200,11 +200,16 @@ int main(int argc, char **argv) {
             auto enc = encs[3];
             uint16_t cum_lo, freq;
             model_get(m, data[i+k], &cum_lo, &freq);
+#ifdef RANS_BRANCHY
             auto res = enc.Rans64EncPut_no_div(cum_lo, freq, rfreq_tab[data[i+k]], RANS_SCALE_BITS);
             if (res) {
                 assert(buf_head > buf+16 && "renorm buffer overflow");
                 *(--buf_head) = *res;
             }
+#else
+            assert(buf_head > buf+16 && "renorm buffer overflow");
+            enc.Rans64EncPut_no_div_to(cum_lo, freq, rfreq_tab[data[i+k]], RANS_SCALE_BITS, buf_head);
+#endif
             encs[3] = encs[2];
             encs[2] = encs[1];
             encs[1] = encs[0];

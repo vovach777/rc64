@@ -493,6 +493,22 @@ Encoder and decoder peak at *different* N (measured, min of 5 runs, 32 MB
 - The **decoder** is latency-bound, so it keeps improving to N=4 (−30% vs N=2);
   N=5 spills and regresses.
 
+**Branchless renorm in the encoder** (`Encoder::Rans64EncPut_no_div_to`, default in `rans_encode` and
+`bench_enc`; `-DRANS_BRANCHY` restores the branch): the 32-bit word is always stored at `head[-1]` and
+`head` moves by the flag; the quotient fix-up is branchless too. Same stream bytes (all 6 datasets of
+`roundtrip_rans.sh` and the 32 MB bench file). Encoder ticks/sym, 32 MB "english", Xeon @ 2.3 GHz, min of 5:
+
+| N | branch | branchless |
+|---|---|---|
+| 1 | 8.35 | 9.16 |
+| 2 | 5.22 | 5.14 |
+| 3 | 5.02 | 4.53 |
+| 4 | 5.91 | **4.26** |
+| 5 | 6.59 | 4.83 |
+
+With one state the longer dependency chain loses; from N = 3 the removed mispredicts win, and at the
+production N = 4 the encoder is 28% faster (the "encoder peaks at N = 2" note above was the mispredicts).
+
 N is shared by the stream format (N flush pairs per block), so it is a
 compromise. **N=4 is hardcoded** in the production codec: best combined
 throughput (decoder's −3 t/sym outweighs the encoder's +1) and the decoder's

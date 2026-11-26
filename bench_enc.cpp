@@ -47,8 +47,12 @@ static void enc_block(const uint8_t *data, size_t base, size_t syms,
         rANS::Encoder enc = e[NN - 1];
         uint16_t lo, f;
         model_get(m, data[base + k], &lo, &f);
+#ifdef RANS_BRANCHY
         auto res = enc.Rans64EncPut_no_div(lo, f, rf[data[base + k]], RANS_SCALE_BITS);
         if (res) *(--head) = *res;
+#else
+        enc.Rans64EncPut_no_div_to(lo, f, rf[data[base + k]], RANS_SCALE_BITS, head);
+#endif
         if constexpr (NN >= 2) e[NN - 1] = e[NN - 2];
         if constexpr (NN >= 3) e[NN - 2] = e[NN - 3];
         if constexpr (NN >= 4) e[NN - 3] = e[NN - 4];
