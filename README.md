@@ -535,14 +535,25 @@ stream bytes, no branch. `-DR16_BRANCHY` keeps the old code for comparison.
 Intel Xeon @ 2.3 GHz (AVX-512 VBMI host, AVX2 decode path), clang -O3 -march=native, 32 MB "english",
 `bench_rans.sh`, min of 5, ticks/sym:
 
-| states | enc, branch | **enc, branchless** | dec (AVX2) | enc+dec |
-|---|---|---|---|---|
-| x16 | 7.84 | **3.03** | 3.66 | 6.69 |
-| x32 | 7.98 | **3.01** | 2.28 | 5.29 |
-| x64 | 8.12 | **3.02** | **1.61** | **4.63** |
+| states | enc, branch | enc, branchless | **enc, branchless + exact div** | dec (AVX2) | enc+dec |
+|---|---|---|---|---|---|
+| x16 | 7.84 | 3.03 | **3.43** | 3.69 | 7.12 |
+| x32 | 7.98 | 3.01 | **3.38** | 2.35 | 5.73 |
+| x64 | 8.12 | 3.02 | **3.43** | **1.70** | **5.13** |
+
+**Bug fixed 2026-11-27 (found by the Qwen agent): skewed data broke the stream.** Two defects, both since
+the first rANS16x16 commit, invisible on text (no symbol with p > 1/2):
+1. the encoder reciprocal `ceil(2^(sh+31)/freq)` (ryg's rans_byte) is exact only for x < 2^31, but these
+   32-bit states reach 2^32 when freq > 2^13: q was off by +1 (64 of 6.5 M (x, freq) pairs). Now the
+   Granlund-Montgomery round-up magic, exact for every 32-bit x: `q = (t + ((x - t) >> 1)) >> (sh - 1)`,
+   `t = mulhi(x, rcp)` (+0.4 t/sym; freq = 1 keeps `rcp = ~0`, same q);
+2. the AVX2 decoder tested `x < L` with a signed `cmpgt`; a state >= 2^31 is negative, so the lane took a
+   word it should not. Now `(x >> 16) == 0`.
+Check: 1 MB files with one symbol at p = 0.5 ... 0.9999, a two-symbol file and the 32 MB text, x16 / x32 / x64,
+all VERIFIED; on text the stream bytes are unchanged (the old q was right there).
 
 (branch column: 8 MB, `-mavx2`). Byte rANS64 N-way on the same run: best enc 5.16 (N=3), best dec 3.95
-(N=5), best enc+dec 10.22 (N=4) -- x64 word-rANS is 2.2x faster end to end. Streams of the branchless
+(N=5), best enc+dec 10.22 (N=4) -- x64 word-rANS is 2x faster end to end. Streams of the branchless
 encoder are byte-identical to the branchy ones and verified by `bench_dec16` for x16 / x32 / x64.
 
 Build note: `R16_ROT` (16 states in one zmm, rotated per symbol: serial, 17.7 t/sym) is compiled only with

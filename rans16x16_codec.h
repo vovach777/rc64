@@ -54,8 +54,11 @@ static inline void enc_sym_init(EncSym& s, uint32_t start, uint32_t freq) {
     s.cmpl = uint16_t((1u << SCALE) - freq);
     if (freq < 2) { s.rcp = ~0u; s.shift = 0; s.bias = start + (1u << SCALE) - 1; }
     else {
+        /* Granlund-Montgomery round-up magic: q = (t + ((x - t) >> 1)) >> (sh - 1), t = mulhi(x, rcp), exact for
+           every 32-bit x. (ryg's rans_byte reciprocal ceil(2^(sh+31)/freq) is exact only for x < 2^31; our states
+           reach 2^32 when freq > 2^13, i.e. a symbol with p > 1/2 -> wrong q, broken stream; fixed 2026-11-27.) */
         uint32_t sh = 0; while (freq > (1u << sh)) sh++;
-        s.rcp = uint32_t(((1ull << (sh + 31)) + freq - 1) / freq);
+        s.rcp = uint32_t((((uint64_t)1 << 32) * ((1ull << sh) - freq)) / freq + 1);
         s.shift = uint16_t(sh - 1); s.bias = start;
     }
 }
@@ -73,7 +76,8 @@ static inline void enc_put(uint32_t& x, const EncSym& s, uint16_t*& head) {
     const uint32_t e = uint32_t(x >= x_max);
     head[-1] = uint16_t(x); head -= e; x >>= (e << 4);
 #endif
-    const uint32_t q = uint32_t((uint64_t(x) * s.rcp) >> 32) >> s.shift;
+    const uint32_t t = uint32_t((uint64_t(x) * s.rcp) >> 32);
+    const uint32_t q = (t + ((x - t) >> 1)) >> s.shift;    /* freq < 2: rcp = ~0, shift 0 -> q = x - 1, as before */
     x = x + s.bias + q * s.cmpl;
 }
 
@@ -141,8 +145,8 @@ static inline __m256i dec_half(__m256i x, const DecTab& t, const uint16_t*& wp, 
 #endif
     const __m256i freq = _mm256_srli_epi32(e, 16), start = _mm256_and_si256(e, _mm256_set1_epi32(0xffff));
     x = _mm256_sub_epi32(_mm256_add_epi32(_mm256_mullo_epi32(freq, _mm256_srli_epi32(x, SCALE)), slot), start);
-    // renorm: lanes with x < L (x is < 2^31 here, signed compare is fine)
-    const __m256i need = _mm256_cmpgt_epi32(_mm256_set1_epi32(int(L)), x);
+    /* x < L, UNSIGNED: states reach 2^32 when a symbol has p > 1/2, a signed compare would take a word for them */
+    const __m256i need = _mm256_cmpeq_epi32(_mm256_srli_epi32(x, 16), _mm256_setzero_si256());
     const int m = _mm256_movemask_ps(_mm256_castsi256_ps(need));
     const __m256i w = _mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*)wp));
     const __m256i wl = _mm256_permutevar8x32_epi32(w, _mm256_load_si256((const __m256i*)g_expand.idx[m]));
